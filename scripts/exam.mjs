@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // 考官工具：服务维护单个会话的状态机，ask 发问、submit 澄清，越界立即报错。
 import { existsSync, readFileSync, writeFileSync, mkdirSync, rmSync, readdirSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, basename } from 'node:path';
 import { createServer } from 'node:http';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
@@ -17,7 +17,12 @@ const help = `exam — 考官工具
 
   exam serve --port 0 --cwd <工作区>   前台服务（一般由 run-tester 拉起）
   exam new-session [--clear]           放弃旧会话，新建一个
-  exam ask "<文本>" | --from <文件>     发问；只在等待发问时可用
+  exam list [--json]                   列出题目（题号 / 类型 / 难度 / 步数 / 标题）
+  exam ask --opening                   发定稿开场白（exam/开场白.md）
+  exam ask --question T1001.md         发题面，自动加「任务 T1001：」前缀
+  exam ask --question T1016.md --step 2  发第 2 步追问（原样发出，不加前缀）
+  exam ask "<文本>" | --from <文件>     发任意文本
+  exam ask ... --dry-run               只打印将要发出的内容，不发送
   exam submit --select "选项" | "文本"  澄清；只在等待澄清时可用
   exam wait [--timeout 秒]             继续等本轮结果
 `;
@@ -249,6 +254,76 @@ function readFrom(file) {
   return text.trim();
 }
 
+// 题目文件按「## 段名」分节：任务 / 进入 / 可澄清点 / 考核要点 / 追问 m。
+const ROOT = fileURLToPath(new URL('..', import.meta.url));
+
+function sections(text) {
+  const out = {};
+  for (const part of text.split(/^## /m).slice(1)) {
+    const nl = part.indexOf('\n');
+    if (nl < 0) out[part.trim()] = '';
+    else out[part.slice(0, nl).trim()] = part.slice(nl + 1).trim();
+  }
+  return out;
+}
+
+function frontmatter(text) {
+  const m = text.match(/^---\n([\s\S]*?)\n---\n/);
+  if (!m) return {};
+  const out = {};
+  for (const line of m[1].split('\n')) {
+    const i = line.indexOf(':');
+    if (i > 0) out[line.slice(0, i).trim()] = line.slice(i + 1).trim();
+  }
+  return out;
+}
+
+function listQuestions(flags) {
+  const dir = join(ROOT, 'exam', 'questions');
+  const rows = readdirSync(dir).filter((f) => /^T\d{4}\.md$/.test(f)).sort().map((file) => {
+    const text = readFileSync(join(dir, file), 'utf8');
+    const fm = frontmatter(text);
+    const steps = (text.match(/^## 追问 \d+$/gm) ?? []).length;
+    if (fm.steps !== undefined && Number(fm.steps) !== steps) {
+      console.error(`! ${file}: frontmatter steps=${fm.steps}，实际 ${steps} 个追问段`);
+    }
+    return {
+      id: file.slice(0, 5),
+      title: fm.title ?? '',
+      type: fm.type ?? '',
+      difficulty: Number(fm.difficulty ?? 0),
+      steps,
+    };
+  });
+  if (flags.json) return console.log(JSON.stringify(rows, null, 2));
+  const pad = (value, width) => String(value) + ' '.repeat(Math.max(1, width - [...String(value)].reduce((n, ch) => n + (ch.charCodeAt(0) > 0x2e80 ? 2 : 1), 0)));
+  console.log(pad('题号', 7) + pad('类型', 6) + pad('难度', 5) + pad('步数', 5) + '标题');
+  for (const r of rows) console.log(pad(r.id, 7) + pad(r.type, 6) + pad(r.difficulty, 5) + pad(r.steps, 5) + r.title);
+}
+
+function questionFile(name) {
+  const path = existsSync(name) ? name : join(ROOT, 'exam', 'questions', name.endsWith('.md') ? name : `${name}.md`);
+  if (!existsSync(path)) throw new Error(`找不到题目文件：${name}（默认在 exam/questions/ 下）`);
+  return path;
+}
+
+function composeAsk(flags) {
+  if (flags.opening) return readFileSync(join(ROOT, 'exam', '开场白.md'), 'utf8').trim();
+  if (!flags.question) return undefined;
+  const file = questionFile(String(flags.question));
+  const sec = sections(readFileSync(file, 'utf8'));
+  if (flags.step !== undefined) {
+    const key = `追问 ${flags.step}`;
+    if (sec[key] === undefined) throw new Error(`题目里没有「${key}」段，只有：${Object.keys(sec).join(' / ')}`);
+    return sec[key];
+  }
+  if (sec['任务'] === undefined) throw new Error('题目里没有「## 任务」段');
+  const id = (basename(file).match(/^(T\d{4})/) ?? [])[1];
+  if (!id) throw new Error('题目文件名须以 T<nnnn> 开头');
+  const intro = sec['进入'] ? `\n\n${sec['进入']}` : '';
+  return `任务 ${id}：${sec['任务']}${intro}`;
+}
+
 function report(body, elapsed) {
   if (body.status === 'question') {
     console.log('⟐ 等待你澄清');
@@ -283,7 +358,8 @@ async function call(path, payload, flags) {
 const { flags, pos } = args(process.argv.slice(2));
 const [command] = pos;
 try {
-  if (command === 'serve') await serve(flags, loadState());
+  if (command === 'list') listQuestions(flags);
+  else if (command === 'serve') await serve(flags, loadState());
   else if (command === 'new-session') {
     const res = await fetch(`http://127.0.0.1:${port()}/new-session`, {
       method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ clear: Boolean(flags.clear) }),
@@ -292,7 +368,9 @@ try {
     if (body.error) throw new Error(body.error);
     console.log(`✓ 会话已建立 ${body.sessionId}${flags.clear ? '（工作区已清空）' : ''}，等待你发问`);
   } else if (command === 'ask') {
-    const text = flags.from ? readFrom(String(flags.from)) : pos.slice(1).join(' ');
+    const text = composeAsk(flags) ?? (flags.from ? readFrom(String(flags.from)) : pos.slice(1).join(' '));
+    if (!text) throw new Error('ask 需要文本、--from、--question 或 --opening 之一');
+    if (flags['dry-run']) { console.log(text); process.exit(0); }
     await call('/ask', { text, timeoutSeconds: Number(flags.timeout ?? 180) }, flags);
   } else if (command === 'submit') {
     const text = pos.slice(1).join(' ');

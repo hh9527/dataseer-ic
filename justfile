@@ -328,6 +328,11 @@ run-tester deploy_port:
 # ── 采样 ────────────────────────────────────────────────────────────────────────
 # 考官工具：服务维护状态，ask 发问、submit 澄清，越界立即报错。
 
+# 列出题目（题号 / 类型 / 难度 / 步数 / 标题，读各题 frontmatter）。
+[positional-arguments]
+list *args:
+    node scripts/exam.mjs list "$@"
+
 [positional-arguments]
 new-session deploy_port *args:
     #!/usr/bin/env bash
