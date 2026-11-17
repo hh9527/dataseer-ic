@@ -73,6 +73,7 @@ const HELP = `tester-cli — 试卷测试员命令行
   --poll 秒        轮询间隔（默认 4）
   --idle 次数      连续空闲多少次判定作答结束（默认 3）
   --effort 档位    推理档位（off/low/high；省略则用提供方默认）
+  --exam 路径      考卷文件；开场白从其中第二章读取
   --preview 字数   回复预览长度（默认 800，0 表示全给）
   --quiet          只打印计时行
   --json           以 JSON 输出（sessions / state / record）
@@ -837,11 +838,11 @@ async function cmdQuestions(flags) {
 // 以及该题实际采用的统计窗口（用于发现"最近 N 天"口径漂移）。
 
 const SAMPLES_DIR = join(STATE_DIR, 'samples');
-// 考卷与工具分居两处：默认取伞仓库 exam/ 下的定稿，可用 TESTER_EXAM_FILE 覆盖。
-const EXAM_FILE = process.env.TESTER_EXAM_FILE ?? join(import.meta.dirname, '..', 'exam', '分析能力考核-IC卷.md');
-
-function examOpening() {
-  const text = readFileSync(EXAM_FILE, 'utf8');
+// 考卷随产品走：--exam 指定，或 TESTER_EXAM_FILE，缺省取伞仓库 exam/ 下的定稿。
+const DEFAULT_EXAM = join(import.meta.dirname, '..', 'exam', '分析能力考核-IC卷.md');
+function examOpening(examPath) {
+  const file = examPath ?? process.env.TESTER_EXAM_FILE ?? DEFAULT_EXAM;
+  const text = readFileSync(file, 'utf8');
   const section = text.match(/^## 二、开场白[^\n]*\n([\s\S]*?)(?=^## )/m)?.[1];
   const lines = section?.split(/\r?\n/).filter(line => line.startsWith('>'));
   if (!lines?.length) throw new Error('考卷缺少第二章的定稿开场白');
@@ -986,7 +987,7 @@ async function cmdSample(pos, flags) {
   await saveState(state);
   console.log(`✓ 采样会话 ${created.sessionId}`);
 
-  const opening = examOpening();
+  const opening = examOpening(flags.exam);
   await ask(state, opening, { ...flags, tag: '开场', quiet: true, preview: 0 });
 
   const blocks = parseBlocks(readFileSync(flags.tasks, 'utf8'));

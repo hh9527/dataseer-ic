@@ -321,4 +321,5 @@ exam deploy_port tasks effort="low":
     export TESTER_CWD="$DEPLOY/dsh/demo-ws"
     node "$ROOT/scripts/tester-cli.mjs" sample \
       --cwd "$TESTER_CWD" --tasks "$2" --label "$(basename "$2" .md)" \
+      --exam "$ROOT/exam/分析能力考核-IC卷.md" \
       --model deepseek-official/deepseek-flash --effort "$3"
