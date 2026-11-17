@@ -315,22 +315,44 @@ test-install:
 # ── 运行 ────────────────────────────────────────────────────────────────────────
 [positional-arguments]
 run deploy_port:
-    @./.deploy/{{deploy_port}}/dsh/run.sh
-
-# ── 采样 ────────────────────────────────────────────────────────────────────────
-# 用法：just exam <端口> <题单> [档位]
-[positional-arguments]
-exam deploy_port tasks effort="low":
     #!/usr/bin/env bash
     set -euo pipefail
-    ROOT="$(pwd)"
-    DEPLOY="$ROOT/.deploy/$1"
-    [ -d "$DEPLOY/dsh" ] || { echo "没有部署：$DEPLOY" >&2; exit 1; }
-    mkdir -p "$DEPLOY/tester" "$ROOT/.deploy/runs"
-    export TESTER_STATE_DIR="$DEPLOY/tester"
-    export TESTER_CONFIG_DIR="$ROOT/exam/config"
-    export TESTER_CWD="$DEPLOY/dsh/demo-ws"
-    node "$ROOT/scripts/tester-cli.mjs" sample \
-      --cwd "$TESTER_CWD" --tasks "$2" --label "$(basename "$2" .md)" \
-      --exam "$ROOT/exam/分析能力考核-IC卷.md" \
-      --model deepseek-official/deepseek-flash --effort "$3"
+    D="$PWD/.deploy/$1/dsh"
+    "$D/run.sh" 2>&1 | tee >(node "$PWD/scripts/capture-token.mjs" "$D/token")
+
+# 跟着 token 文件走：自动换 Cookie 并重启考官服务，退出时收掉子进程。
+[positional-arguments]
+run-tester deploy_port:
+    @node scripts/run-tester.mjs {{deploy_port}}
+
+# ── 采样 ────────────────────────────────────────────────────────────────────────
+# 考官工具：服务维护状态，ask 发问、submit 澄清，越界立即报错。
+
+[positional-arguments]
+new-session deploy_port *args:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    export TESTER_STATE_DIR="$PWD/.deploy/$1/tester"
+    node scripts/exam.mjs new-session "${@:2}"
+
+[positional-arguments]
+ask deploy_port *args:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    export TESTER_STATE_DIR="$PWD/.deploy/$1/tester"
+    node scripts/exam.mjs ask "${@:2}"
+
+[positional-arguments]
+submit deploy_port *args:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    export TESTER_STATE_DIR="$PWD/.deploy/$1/tester"
+    node scripts/exam.mjs submit "${@:2}"
+
+[positional-arguments]
+wait deploy_port *args:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    export TESTER_STATE_DIR="$PWD/.deploy/$1/tester"
+    node scripts/exam.mjs wait "${@:2}"
+
