@@ -317,10 +317,6 @@ test-install:
 run deploy_port:
     @./.deploy/{{deploy_port}}/dsh/run.sh
 
-[positional-arguments]
-stop deploy_port:
-    @test -e ./.deploy/{{deploy_port}}/dsh/.ctrl && touch ./.deploy/{{deploy_port}}/dsh/.ctrl && echo "已请求重启/停止跟踪"
-
 # ── 采样 ────────────────────────────────────────────────────────────────────────
 # 用法：just exam <端口> <题单> [档位]
 [positional-arguments]
