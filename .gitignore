@@ -1,0 +1,5 @@
+# 部署产物与运行状态
+/.deploy/
+# 构建产物
+/dist/
+node_modules/
