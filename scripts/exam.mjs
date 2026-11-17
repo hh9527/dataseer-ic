@@ -23,7 +23,7 @@ const help = `exam — 考官工具
   exam ask --question T1016.md --step 2  发第 2 步追问（原样发出，不加前缀）
   exam ask "<文本>" | --from <文件>     发任意文本
   exam ask ... --dry-run               只打印将要发出的内容，不发送
-  exam submit --select "选项" | "文本"  澄清；只在等待澄清时可用
+  exam submit --select "1;2" | "文本"   澄清；多个问题用分号按顺序分段
   exam wait [--timeout 秒]             继续等本轮结果
 `;
 
@@ -154,9 +154,18 @@ async function serve(flags, state) {
       if (!q.multiSelect && picked.length > 1) throw new Error(`该问题只能选一个：${labels.join(' / ')}`);
       return picked;
     };
+    // 多问题：--select / 文本用分号按问题顺序分段；只有一个问题时整段不拆。
+    const partsOf = (value) => {
+      const raw = String(value ?? '');
+      if (questions.length <= 1) return [raw];
+      return raw.split(/[;；]/).map((s) => s.trim());
+    };
+    const parts = select !== undefined ? partsOf(select) : partsOf(text);
+    if (parts.length > questions.length) throw new Error(`给了 ${parts.length} 段，本轮只有 ${questions.length} 个问题`);
     const answers = questions.map((q, index) => {
-      if (index > 0) return { id: q.id, selected: [] };
-      return select !== undefined ? { id: q.id, selected: pick(q, select) } : { id: q.id, selected: [], custom: text };
+      const part = parts[index];
+      if (select !== undefined) return { id: q.id, selected: part ? pick(q, part) : [] };
+      return { id: q.id, selected: [], custom: part ?? '' };
     });
     const res = await fetch(`${state.base}/api/$events/result`, {
       method: 'POST',
