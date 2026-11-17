@@ -29,13 +29,28 @@ build:
     [ -d "$DARI_REPO/packages/dsh/node_modules" ] || pnpm --dir "$DARI_REPO/packages/dsh" install --ignore-scripts
     (cd "$DARI_REPO/packages/dsh" && pnpm run build) || { printf 'build: 插件构建失败（%s）\n' "$DARI_REPO" >&2; exit 1; }
 
+# 构建 telora 编译器（取自 submodule，保证与 dari 的运行时 ABI 一致）。
+telora:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cargo build --release --manifest-path vendors/telora/Cargo.toml
+
+# 构建 IC 模型；编译器固定用 submodule 的 release 二进制。
+model: telora
+    #!/usr/bin/env bash
+    set -euo pipefail
+    TELORA_BIN="$PWD/vendors/telora/target/release/telora" \
+      just --justfile "$PWD/vendors/lab-ontology/justfile" build
+    ls -l "$PWD/vendors/lab-ontology/dist/ic-model.wasm"
+
 # 构建并准备独立部署；服务由生成的 run.sh 手动启动。
 [positional-arguments]
 deploy deploy_port model="" data="":
     #!/usr/bin/env bash
     set -euo pipefail
     DEPLOY_PORT="$1"
-    MODEL="$2"; DATAFILE="$3"; DOMAIN="${OKS_DOMAIN:-ic}"
+    # 模型默认用伞内构建的产物：它由 vendors/telora 的稳定切片编译，ABI 与插件一致。
+    MODEL="${2:-$PWD/vendors/lab-ontology/dist/ic-model.wasm}"; DATAFILE="$3"; DOMAIN="${OKS_DOMAIN:-ic}"
     [[ "$DEPLOY_PORT" =~ ^[1-9][0-9]{0,4}$ ]] && (( DEPLOY_PORT <= 65535 )) || { printf 'deploy: port 必须是 1..65535 的整数\n' >&2; exit 1; }
     # 部署产物属于使用方项目：默认放在调用者当前目录的 .deploy 下，可用 OKS_DEPLOY_ROOT 指定。
     DEPLOY_ROOT="${OKS_DEPLOY_ROOT:-$PWD/.deploy}"
