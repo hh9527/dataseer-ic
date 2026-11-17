@@ -83,6 +83,8 @@ async function serve(flags, state) {
   let phase = 'none';
   let pending;
   let seqAtTurnStart = 0;
+  let lastReply = '';
+  let generation = 0;
 
   const ws = new WebSocket(`${state.base.replace(/^http/, 'ws')}/api/remote.mux`, { headers: { cookie: state.cookie ?? '' } });
   ws.addEventListener('open', () => ws.send(JSON.stringify({ type: 'open', streamId: randomUUID(), endpoint: '$events', payload: { args: {} } })));
@@ -93,6 +95,9 @@ async function serve(flags, state) {
     if (value.type === 'ready') { ws.__clientId = value.clientId; return; }
     if (value.type !== 'waterfall') return;
     if (!sessionId) return;
+    // agentId 即会话号：别的会话的提问一律无视。
+    const eventSession = value.agentId ?? value.request?.agentId;
+    if (eventSession !== undefined && String(eventSession) !== sessionId) return;
     if (value.event === 'user-questions/request') {
       const questions = findQuestions(value.request);
       if (!questions) return;
@@ -117,7 +122,9 @@ async function serve(flags, state) {
   // 结束判定以会话真实状态为准：turn/end 不在事件流里，不能等它。
   const waitSettled = async (timeoutMs) => {
     const deadline = Date.now() + timeoutMs;
+    const myGeneration = generation;
     for (;;) {
+      if (generation !== myGeneration) return { status: 'aborted' };
       if (phase === 'pending') return { status: 'question', questions: pending.questions };
       const view = await sessionView();
       if (!view.running && view.seq > seqAtTurnStart) {
@@ -172,7 +179,8 @@ async function serve(flags, state) {
           }
           const created = await rpc(state, 'session/create', { cwd, agentPreset: 'dari' });
           sessionId = created.sessionId;          // 放弃旧会话
-          pending = undefined; phase = 'idle'; seqAtTurnStart = 0;
+          generation += 1;                        // 旧一轮的等待一并作废
+          pending = undefined; phase = 'idle'; seqAtTurnStart = 0; lastReply = '';
           saveState({ ...state, cwd, sessionId });
           send(200, { sessionId });
         } catch (error) { send(409, { error: String(error?.message ?? error) }); }
@@ -248,6 +256,10 @@ function report(body, elapsed) {
       console.log(`  [${q.id}] ${q.header ?? ''} ${q.question ?? ''}`);
       for (const o of q.options ?? []) console.log(`    - ${o.label ?? o}`);
     }
+    return;
+  }
+  if (body.status === 'aborted') {
+    console.log('× 会话已更换，本轮作废');
     return;
   }
   if (body.status === 'done') {
