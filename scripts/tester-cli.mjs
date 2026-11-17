@@ -837,7 +837,8 @@ async function cmdQuestions(flags) {
 // 以及该题实际采用的统计窗口（用于发现"最近 N 天"口径漂移）。
 
 const SAMPLES_DIR = join(STATE_DIR, 'samples');
-const EXAM_FILE = join(import.meta.dirname, '分析能力考核-IC卷.md');
+// 考卷与工具分居两处：默认取伞仓库 exam/ 下的定稿，可用 TESTER_EXAM_FILE 覆盖。
+const EXAM_FILE = process.env.TESTER_EXAM_FILE ?? join(import.meta.dirname, '..', 'exam', '分析能力考核-IC卷.md');
 
 function examOpening() {
   const text = readFileSync(EXAM_FILE, 'utf8');

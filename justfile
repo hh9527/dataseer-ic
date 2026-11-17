@@ -31,16 +31,22 @@ build:
 
 # 构建并准备独立部署；服务由生成的 run.sh 手动启动。
 [positional-arguments]
-deploy deploy_port:
+deploy deploy_port model="" data="":
     #!/usr/bin/env bash
     set -euo pipefail
     DEPLOY_PORT="$1"
+    MODEL="$2"; DATAFILE="$3"; DOMAIN="${OKS_DOMAIN:-ic}"
     [[ "$DEPLOY_PORT" =~ ^[1-9][0-9]{0,4}$ ]] && (( DEPLOY_PORT <= 65535 )) || { printf 'deploy: port 必须是 1..65535 的整数\n' >&2; exit 1; }
     # 部署产物属于使用方项目：默认放在调用者当前目录的 .deploy 下，可用 OKS_DEPLOY_ROOT 指定。
     DEPLOY_ROOT="${OKS_DEPLOY_ROOT:-$PWD/.deploy}"
     DEPLOY_DIR="$DEPLOY_ROOT/$DEPLOY_PORT/dsh"
     just build
     mkdir -p "$DEPLOY_DIR/demo-ws"
+    # 模型与数据源属于产品输入：给了就写成工作区声明，供插件解析。
+    if [ -n "$MODEL" ] && [ -n "$DATAFILE" ]; then
+      printf '{\n  "version": 1,\n  "domain": "%s",\n  "model": "%s",\n  "dataFile": "%s"\n}\n' \
+        "$DOMAIN" "$MODEL" "$DATAFILE" > "$DEPLOY_DIR/demo-ws/dari.json"
+    fi
     just "port=$DEPLOY_PORT" "target=$DEPLOY_DIR" "workspace=$DEPLOY_DIR/demo-ws" install-profile
 
 # 安装已构建的发布目录到完整 Web profile，包含主 Agent 文件工具。
