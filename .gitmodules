@@ -1,0 +1,9 @@
+[submodule "vendors/dari"]
+	path = vendors/dari
+	url = https://github.com/hh9527/dari.git
+[submodule "vendors/telora"]
+	path = vendors/telora
+	url = https://github.com/hh9527/telora.git
+[submodule "vendors/lab-ontology"]
+	path = vendors/lab-ontology
+	url = https://github.com/hh9527/lab-ontology.git
