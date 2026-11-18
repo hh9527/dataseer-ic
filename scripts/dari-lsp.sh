@@ -18,13 +18,13 @@ DEPLOY="${DARI_LSP_DEPLOY:-}"
 if [ -z "$DEPLOY" ]; then
   base="${WORKSPACE:-$PWD}"
   candidate="$(cd -- "$base/../.." 2>/dev/null && pwd || true)"
-  if [ -n "$candidate" ] && [ -f "$candidate/packages/dsh-plugin-dari/dari-runtime/bin/dari-lsp.mjs" ]; then
+  if [ -n "$candidate" ] && [ -f "$candidate/dari/lib/dari.mjs" ]; then
     DEPLOY="$candidate"
   fi
 fi
 [ -n "$DEPLOY" ] || DEPLOY="$ROOT/.deploy/${DARI_LSP_PORT:-10924}/dsh"
 
-LSP="$DEPLOY/packages/dsh-plugin-dari/dari-runtime/bin/dari-lsp.mjs"
+LSP="$DEPLOY/dari/lib/dari.mjs"
 [ -f "$LSP" ] || { echo "dari-lsp: 找不到 $LSP（先 just deploy <端口>）" >&2; exit 1; }
 
 MODEL="${DARI_LSP_MODEL:-}"
@@ -34,6 +34,6 @@ if [ -n "$MODEL" ]; then
   case "$MODEL" in
     *'"'*|*'\\'*) echo "dari-lsp: 模型路径里的引号或反斜杠目前不支持：$MODEL" >&2; exit 1 ;;
   esac
-  exec node "$LSP" "${WORKSPACE_ARG[@]}" --options "{\"model\":\"$MODEL\"}"
+  exec node "$LSP" lsp "${WORKSPACE_ARG[@]}" --options "{\"model\":\"$MODEL\"}"
 fi
-exec node "$LSP" "${WORKSPACE_ARG[@]}"
+exec node "$LSP" lsp "${WORKSPACE_ARG[@]}"

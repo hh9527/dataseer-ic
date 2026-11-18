@@ -20,6 +20,9 @@ build:
     [ -d "$DARI_REPO/node_modules" ] || npm --prefix "$DARI_REPO" ci --ignore-scripts
     [ -d "$DARI_REPO/packages/dsh/node_modules" ] || pnpm --dir "$DARI_REPO/packages/dsh" install --ignore-scripts
     (cd "$DARI_REPO/packages/dsh" && pnpm run build) || { printf 'build: 插件构建失败（%s）\n' "$DARI_REPO" >&2; exit 1; }
+    # dari 制品单独打包，供部署里的 LSP 使用；插件自身不携带 dari 运行时。
+    rm -rf "$DARI_REPO/dist/dari"
+    node "$DARI_REPO/scripts/package-runtime.mjs" "$DARI_REPO/dist/dari"
 
 # 构建 telora 编译器（取自 submodule，保证与 dari 的运行时 ABI 一致）。
 telora:
@@ -118,7 +121,10 @@ install-profile deploy_port:
     PRESET_DIR="$DSH_HOME/packages/dsh-preset-dari"
     rm -rf "$PACKAGE_DIR" "$CLIENT_DIR"
     mkdir -p "$DSH_HOME/packages"
+    rm -rf "$PACKAGE_DIR"
     cp -R "$DIST_DIR/dsh-plugin-dari" "$PACKAGE_DIR"
+    rm -rf "$DSH_HOME/dari"
+    cp -R "$DIST_DIR/dari" "$DSH_HOME/dari"
     cp -R "$DIST_DIR/dsh-plugin-dari-client" "$CLIENT_DIR"
     rm -rf "$PRESET_DIR"
     cp -R "$DARI_REPO/packages/dsh/dsh-preset-dari" "$PRESET_DIR"
