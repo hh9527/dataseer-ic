@@ -57,6 +57,24 @@ just submit 10924 --select "1;2"           # 澄清；多问题按分号分段
 just wait 10924                            # 上一轮没结束，继续等
 ```
 
+## 编辑器（LSP）
+
+`.dari` 的补全、诊断与定义跳转由 `scripts/dari-lsp.sh` 提供。Helix 的 `~/.config/helix/languages.toml` 指向它即可：
+
+```toml
+[language-server.dari]
+command = "/absolute/path/to/dataseer-ic/scripts/dari-lsp.sh"
+
+[[language]]
+name = "dari"
+file-types = ["dari"]
+roots = ["dari.json", "package.json", ".git"]
+language-servers = ["dari"]
+grammar = "dari"
+```
+
+Helix 会向上找到 `dari.json` 作为工作区根，并把 LSP 的 cwd 设为该目录；启动器读 `<工作区>/dari.json` 的 `model`。`DARI_LSP_MODEL` 可强制指定模型，`DARI_LSP_DEPLOY` 可指定运行时所在的部署；工作区在 `.deploy/<端口>/dsh/demo-ws` 下时自动用同一个部署的运行时。模型缺失时 LSP 仍会启动，模型相关检查退化为 `model-unavailable` 诊断。
+
 ## 目录约定
 
 ```text
