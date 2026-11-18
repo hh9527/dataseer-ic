@@ -73,7 +73,7 @@ language-servers = ["dari"]
 grammar = "dari"
 ```
 
-Helix 会向上找到 `dari.json` 作为工作区根，并把 LSP 的 cwd 设为该目录；启动器读 `<工作区>/dari.json` 的 `model`。`DARI_LSP_MODEL` 可强制指定模型，`DARI_LSP_DEPLOY` 可指定运行时所在的部署；工作区在 `.deploy/<端口>/dsh/demo-ws` 下时自动用同一个部署的运行时。模型缺失时 LSP 仍会启动，模型相关检查退化为 `model-unavailable` 诊断。
+LSP 以打开的文件为准，向上找到最近的 `dari.json` 作为工作区，读其中的 `model`；`DARI_LSP_ROOT` 可强制指定工作区。`DARI_LSP_MODEL` 可强制指定模型，`DARI_LSP_DEPLOY` 可指定运行时所在的部署；工作区在 `.deploy/<端口>/dsh/demo-ws` 下时自动用同一个部署的运行时。模型缺失时 LSP 仍会启动，模型相关检查退化为 `model-unavailable` 诊断。
 
 ## 目录约定
 
