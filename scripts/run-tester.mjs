@@ -2,7 +2,7 @@
 // 跟着部署的 token 文件走：token 变化时换 Cookie 并重启考官服务；退出时收掉子进程。
 import { existsSync, readFileSync, watch, writeFileSync, mkdirSync } from 'node:fs';
 import { spawn } from 'node:child_process';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const port = process.argv[2] ?? '10924';
@@ -67,6 +67,14 @@ mkdirSync(join(root, '.deploy', port, 'tester'), { recursive: true });
 if (!existsSync(ctrlFile)) writeFileSync(ctrlFile, '');
 watch(ctrlFile, () => { cycle().catch((error) => console.error(`✗ ${error.message}`)); });
 
-watch(tokenFile, () => { cycle().catch((error) => console.error(`✗ ${error.message}`)); });
+// token 文件常被原子替换（rename），直接 watch 文件会丢监听；改看目录并比对内容。
+let lastToken = existsSync(tokenFile) ? readFileSync(tokenFile, 'utf8').trim() : '';
+watch(dirname(tokenFile), () => {
+  if (!existsSync(tokenFile)) return;
+  const next = readFileSync(tokenFile, 'utf8').trim();
+  if (next === lastToken) return;
+  lastToken = next;
+  cycle().catch((error) => console.error(`✗ ${error.message}`));
+});
 await cycle().catch((error) => console.error(`✗ ${error.message}`));
 console.log('run-tester 已就绪；touch .deploy/' + port + '/tester/.ctrl 可重启考官服务，Ctrl-C 退出');

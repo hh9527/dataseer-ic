@@ -91,9 +91,10 @@ async function serve(flags, state) {
   let lastReply = '';
   let generation = 0;
 
-  const ws = new WebSocket(`${state.base.replace(/^http/, 'ws')}/api/remote.mux`, { headers: { cookie: state.cookie ?? '' } });
-  ws.addEventListener('open', () => ws.send(JSON.stringify({ type: 'open', streamId: randomUUID(), endpoint: '$events', payload: { args: {} } })));
-  ws.addEventListener('message', (m) => {
+  // 事件流必须能自愈：DSH 重启会关掉旧的 WebSocket，不重连就再也收不到澄清请求。
+  let ws;
+  let stopping = false;
+  const onFrame = (m) => {
     let frame; try { frame = JSON.parse(String(m.data)); } catch { return; }
     const value = frame?.value;
     if (!value) return;
@@ -113,7 +114,20 @@ async function serve(flags, state) {
     if (value.event === 'turn/end') {
       if (!pending) phase = 'idle';
     }
-  });
+  };
+  const openEvents = () => {
+    if (stopping) return;
+    // 每次重连都重新读 state：run-tester 可能已换过 Cookie。
+    const fresh = loadState();
+    const socket = new WebSocket(`${fresh.base.replace(/^http/, 'ws')}/api/remote.mux`, { headers: { cookie: fresh.cookie ?? '' } });
+    ws = socket;
+    socket.addEventListener('open', () => socket.send(JSON.stringify({ type: 'open', streamId: randomUUID(), endpoint: '$events', payload: { args: {} } })));
+    socket.addEventListener('message', onFrame);
+    socket.addEventListener('error', () => { try { socket.close(); } catch {} });
+    socket.addEventListener('close', () => { if (!stopping) setTimeout(openEvents, 1000); });
+  };
+  openEvents();
+  process.on('SIGTERM', () => { stopping = true; try { ws?.close(); } catch {} });
 
   const sessionView = async () => {
     const items = (await rpc(state, 'session/list', {})).items ?? [];
