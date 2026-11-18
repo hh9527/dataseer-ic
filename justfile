@@ -1,13 +1,5 @@
-# OKS 发布与运行环境。命令行示例见 README.md。
-port := "10924"
-target := justfile_directory() / ".deploy" / port / "dsh"
-profile := "web"
-workspace := absolute_path(target) / "demo-ws"
-
-export OKS_INSTALL_PORT := port
-export DSH_HOME := absolute_path(target)
-export DSH_PROFILE := profile
-export OKS_WORKSPACE := absolute_path(workspace)
+# 发布与运行环境。命令与目录约定见 README.md。
+# 端口没有默认值：每条命令都要显式给出，例如 `just run 10924`。
 
 # 显示可用命令。
 default:
@@ -50,10 +42,10 @@ deploy deploy_port model="" data="":
     set -euo pipefail
     DEPLOY_PORT="$1"
     # 模型默认用伞内构建的产物：它由 vendors/telora 的稳定切片编译，ABI 与插件一致。
-    MODEL="${2:-$PWD/vendors/lab-ontology/dist/ic-model.wasm}"; DATAFILE="$3"; DOMAIN="${OKS_DOMAIN:-ic}"
+    MODEL="${2:-$PWD/vendors/lab-ontology/dist/ic-model.wasm}"; DATAFILE="$3"; DOMAIN="${DARI_DOMAIN:-ic}"
     [[ "$DEPLOY_PORT" =~ ^[1-9][0-9]{0,4}$ ]] && (( DEPLOY_PORT <= 65535 )) || { printf 'deploy: port 必须是 1..65535 的整数\n' >&2; exit 1; }
-    # 部署产物属于使用方项目：默认放在调用者当前目录的 .deploy 下，可用 OKS_DEPLOY_ROOT 指定。
-    DEPLOY_ROOT="${OKS_DEPLOY_ROOT:-$PWD/.deploy}"
+    # 部署产物属于使用方项目：默认放在调用者当前目录的 .deploy 下，可用 DEPLOY_ROOT 指定。
+    DEPLOY_ROOT="${DEPLOY_ROOT:-$PWD/.deploy}"
     DEPLOY_DIR="$DEPLOY_ROOT/$DEPLOY_PORT/dsh"
     just build
     mkdir -p "$DEPLOY_DIR/demo-ws"
@@ -62,12 +54,21 @@ deploy deploy_port model="" data="":
       printf '{\n  "version": 1,\n  "domain": "%s",\n  "model": "%s",\n  "dataFile": "%s"\n}\n' \
         "$DOMAIN" "$MODEL" "$DATAFILE" > "$DEPLOY_DIR/demo-ws/dari.json"
     fi
-    just "port=$DEPLOY_PORT" "target=$DEPLOY_DIR" "workspace=$DEPLOY_DIR/demo-ws" install-profile
+    just install-profile "$DEPLOY_PORT"
 
 # 安装已构建的发布目录到完整 Web profile，包含主 Agent 文件工具。
-install-profile:
+# 端口必须显式给出：just install-profile 10924
+[positional-arguments]
+install-profile deploy_port:
     #!/usr/bin/env bash
     set -euo pipefail
+    DEPLOY_PORT="$1"
+    [[ "$DEPLOY_PORT" =~ ^[1-9][0-9]{0,4}$ ]] && (( DEPLOY_PORT <= 65535 )) || { printf 'install-profile: port 必须是 1..65535 的整数\n' >&2; exit 1; }
+    DEPLOY_ROOT="${DEPLOY_ROOT:-$PWD/.deploy}"
+    export INSTALL_PORT="$DEPLOY_PORT"
+    export DSH_PROFILE="${DSH_PROFILE:-web}"
+    export DSH_HOME="$DEPLOY_ROOT/$DEPLOY_PORT/dsh"
+    export DEPLOY_WORKSPACE="$DSH_HOME/demo-ws"
     REPO_DIR="$PWD"
     PACKAGE='@local/dsh-plugin-dari'
     PACKAGE_DIR="$DSH_HOME/packages/dsh-plugin-dari"
@@ -76,9 +77,8 @@ install-profile:
     DSH_HOME_DIR="$DSH_HOME"
     fail() { printf 'install-profile: %s\n' "$*" >&2; exit 1; }
     say() { printf 'install-profile: %s\n' "$*"; }
-    [[ "$OKS_INSTALL_PORT" =~ ^[1-9][0-9]{0,4}$ ]] && (( OKS_INSTALL_PORT <= 65535 )) || fail 'port 必须是 1..65535 的整数'
     [[ "$PROFILE" =~ ^[a-zA-Z0-9_-]+$ ]] || fail 'profile 只能包含字母、数字、下划线与连字符'
-    mkdir -p "$OKS_WORKSPACE"
+    mkdir -p "$DEPLOY_WORKSPACE"
     [ "$PROFILE" != 'desktop' ] || fail 'desktop profile 由 DeepSeek Harness Desktop 自己初始化，先打开它一次并完全退出，再用 dsh plugin 管理'
 
     PROFILE_DIR="$DSH_HOME_DIR/profiles/$PROFILE"
@@ -279,7 +279,7 @@ install-profile:
     fi
 
     # 启动脚本直接运行；justfile 为同一组脚本提供便捷入口。
-    WORKSPACE="$OKS_WORKSPACE" PORT="$OKS_INSTALL_PORT" node --input-type=module - "${DSH_ARR[@]}" "$PROFILE" <<'JS'
+    WORKSPACE="$DEPLOY_WORKSPACE" PORT="$INSTALL_PORT" node --input-type=module - "${DSH_ARR[@]}" "$PROFILE" <<'JS'
     import {writeFileSync,chmodSync,existsSync} from 'node:fs';
     import {join} from 'node:path';
     const quote=value=>"'"+value.replaceAll("'", "'\\''")+"'";
@@ -306,7 +306,7 @@ install-profile:
       'default:\n    @just --list\n\n[positional-arguments]\nrun-dsh *args:\n    @'+quote(direct)+' "$@"\n\n'+
       '[positional-arguments]\nrun *args:\n    @'+quote(watched)+' "$@"\n');
     JS
-    say "启动：$DSH_HOME_DIR/run.sh（端口 $OKS_INSTALL_PORT，工作区 $OKS_WORKSPACE）"
+    say "启动：$DSH_HOME_DIR/run.sh（端口 $INSTALL_PORT，工作区 $DEPLOY_WORKSPACE）"
 
 # 隔离核验安装和启动，不构建真实插件、不启动服务。
 test-install:

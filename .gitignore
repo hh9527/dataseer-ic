@@ -3,3 +3,6 @@
 # 构建产物
 /dist/
 node_modules/
+
+# pnpm 本地缓存
+/.pnpm-store/
