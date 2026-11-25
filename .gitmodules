@@ -10,3 +10,6 @@
 	path = vendors/lab-ontology
 	url = https://github.com/hh9527/lab-ontology.git
 	branch = main
+[submodule "exam"]
+	path = exam
+	url = https://github.com/hh9527/dataseer-ic-exam.git

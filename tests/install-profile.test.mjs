@@ -1,339 +1,201 @@
-// 隔离验证安装、重复安装和启动；外部构建及宿主命令使用替身。
+// 安装与部署只调用替身；真实 watcher 的子进程也是不监听端口的替身。
 import assert from 'node:assert/strict';
-import { spawn, spawnSync } from 'node:child_process';
-import {
-  chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, rmSync, symlinkSync, writeFileSync,
-} from 'node:fs';
-import { tmpdir } from 'node:os';
-import { basename, dirname, join } from 'node:path';
-import test from 'node:test';
-import { fileURLToPath } from 'node:url';
+import * as fs from 'node:fs';
+import * as path from 'node:path';
+import {homedir} from 'node:os';
+import {spawn,spawnSync} from 'node:child_process';
+import {fileURLToPath} from 'node:url';
+import {test} from 'node:test';
 
-const REPO = fileURLToPath(new URL('..', import.meta.url));
-const IGNORED = new Set(['.git', 'node_modules', 'target', 'lib', 'dist', '.deploy', '__pycache__']);
-const CALL_STUB = `#!/usr/bin/env node
-const fs = require('node:fs');
-const path = require('node:path');
-const { spawnSync } = require('node:child_process');
-const args = process.argv.slice(2);
-const name = path.basename(process.argv[1]);
-fs.appendFileSync(process.env.CALL_LOG, JSON.stringify({ cmd: name, args, cwd: process.cwd(), home: process.env.DSH_HOME }) + '\\n');
-if (name === 'watchexec') {
-  const command = args.slice(args.indexOf('--') + 1);
-  const result = spawnSync(command[0], command.slice(1), { stdio: 'inherit' });
-  process.exit(result.status ?? 1);
+const REPO=fileURLToPath(new URL('..',import.meta.url));
+const TMP=process.env.TMPDIR||path.join(homedir(),'.cache/tmp');
+fs.mkdirSync(TMP,{recursive:true});
+
+function writeRelease(dari,version,fs,path){
+ for(const [name,entry]of [['dsh-plugin-dari','lib/index.mjs'],['dsh-plugin-dari-client','lib/client.mjs']]){
+  const dir=path.join(dari,'dist',name);
+  fs.mkdirSync(path.dirname(path.join(dir,entry)),{recursive:true});
+  fs.writeFileSync(path.join(dir,entry),'// '+version+'\n');
+  fs.writeFileSync(path.join(dir,'package.json'),JSON.stringify({name:'@local/'+name,type:'module'}));
+ }
 }
-if (name === 'pnpm') {
-  if (args.join(' ') === 'install --frozen-lockfile --ignore-scripts' && process.env.FAIL_BUILD_INSTALL) process.exit(17);
-  // runtime 安装：替身只需要交出可执行的 dsh 占位。
-  if (args[0] === 'install') {
-    const bin = path.join(process.cwd(), 'node_modules', '.bin', 'dsh');
-    fs.mkdirSync(path.dirname(bin), { recursive: true });
-    const stub = (process.env.PATH ?? '').split(':').map((d) => path.join(d, 'dsh')).find((f) => fs.existsSync(f));
-    if (stub) fs.copyFileSync(stub, bin);
-    else fs.writeFileSync(bin, '#!/usr/bin/env bash\\nexit 0\\n');
-    fs.chmodSync(bin, 0o755);
-  }
-  if (args.join(' ') === 'run build') {
-    if (process.env.FAIL_BUILD) process.exit(17);
-    const output = path.resolve(process.cwd(), '../../dist', path.basename(process.cwd()), 'lib');
-    fs.mkdirSync(output, { recursive: true });
-    fs.writeFileSync(path.join(output, 'index.mjs'), '// published plugin');
-    if (path.basename(process.cwd()) === 'dsh-push-to-user') fs.writeFileSync(path.join(output, 'client.js'), '// published client');
-  }
-} else if (args[0] === 'plugin') {
-  const profile = path.join(process.env.DSH_HOME, 'profiles', args[2]);
-  fs.mkdirSync(profile, { recursive: true });
-  const manifest = path.join(profile, 'package.json');
-  if (!fs.existsSync(manifest)) {
-    fs.writeFileSync(manifest, JSON.stringify({ dsh: { profile: { bundles: [] } } }));
-    fs.writeFileSync(path.join(profile, 'cordis.patch.yml'), '# user config\\n[]\\n');
-  }
-  const data = JSON.parse(fs.readFileSync(manifest, 'utf8'));
-  for (const [pkg, source] of Object.entries(data.dependencies ?? {})) {
-    const link = path.join(profile, 'node_modules', pkg);
-    fs.mkdirSync(path.dirname(link), { recursive: true });
-    fs.rmSync(link, { recursive: true, force: true });
-    fs.symlinkSync(source.replace(/^link:/, ''), link);
-  }
+const CALL_STUB=String.raw`#!/usr/bin/env node
+const fs=require('node:fs'),path=require('node:path');
+const {spawnSync}=require('node:child_process');
+const args=process.argv.slice(2),cmd=path.basename(process.argv[1]);
+fs.appendFileSync(process.env.CALL_LOG,JSON.stringify({cmd,args,cwd:process.cwd(),home:process.env.DSH_HOME})+'\n');
+if(cmd==='npm')throw Error('The test must not invoke a real dependency install');
+if(cmd==='watchexec'){
+ const at=args.indexOf('--'),result=spawnSync(args[at+1],args.slice(at+2),{stdio:'inherit'});
+ process.exit(result.status??1);
+}
+if(cmd==='pnpm'){
+ if(args.join(' ')==='run build'){
+  if(process.env.FAIL_BUILD)process.exit(17);
+  (${writeRelease.toString()})(path.resolve(process.cwd(),'../..'),'built',fs,path);
+ }
+ if(args[0]==='install'){
+  const bin=path.join(process.cwd(),'node_modules/.bin/dsh');fs.mkdirSync(path.dirname(bin),{recursive:true});
+  fs.copyFileSync(path.join(process.env.TEST_TOOLS,'dsh'),bin);fs.chmodSync(bin,0o755);
+ }
+}else if(args.includes('plugin')){
+ const profile=path.join(process.env.DSH_HOME,'profiles',args[args.indexOf('--profile')+1]);
+ fs.mkdirSync(profile,{recursive:true});const manifest=path.join(profile,'package.json');
+ if(!fs.existsSync(manifest)){
+  fs.writeFileSync(manifest,JSON.stringify({dsh:{profile:{bundles:[]}}}));
+  fs.writeFileSync(path.join(profile,'cordis.patch.yml'),'# user config\n[]\n');
+ }
+ const data=JSON.parse(fs.readFileSync(manifest,'utf8'));
+ for(const [name,value]of Object.entries(data.dependencies??{})){
+  const link=path.join(profile,'node_modules',name);fs.mkdirSync(path.dirname(link),{recursive:true});
+  fs.rmSync(link,{recursive:true,force:true});fs.symlinkSync(value.replace(/^link:/,''),link);
+ }
 }
 `;
-const SLEEPER_STUB = `#!/usr/bin/env node
-const fs = require('node:fs');
-fs.appendFileSync(process.env.RESTART_LOG, JSON.stringify({ pid: process.pid, cwd: process.cwd(), home: process.env.DSH_HOME }) + '\\n');
-process.on('SIGTERM', () => process.exit(0));
-setInterval(() => {}, 50);
+const SLEEPER=String.raw`#!/usr/bin/env node
+const fs=require('node:fs');
+fs.appendFileSync(process.env.RESTART_LOG,JSON.stringify({pid:process.pid,cwd:process.cwd(),home:process.env.DSH_HOME})+'\n');
+process.on('SIGTERM',()=>process.exit(0));setInterval(()=>{},50);
 `;
-
-function copyRepo(destination) {
-  cpSync(REPO, destination, {
-    recursive: true,
-    filter: (source) => !IGNORED.has(basename(source)),
-  });
+function writeTool(file,content){fs.writeFileSync(file,content,{mode:0o755});}
+function readCalls(file){return fs.existsSync(file)?fs.readFileSync(file,'utf8').trim().split('\n').filter(Boolean).map(line=>JSON.parse(line)):[];}
+function fixture(){
+ const root=fs.mkdtempSync(path.join(TMP,'ic-install-')),repo=path.join(root,"author's source repo"),dari=path.join(repo,'vendors/dari');
+ fs.mkdirSync(path.join(repo,'runtime'),{recursive:true});
+ fs.copyFileSync(path.join(REPO,'justfile'),path.join(repo,'justfile'));
+ for(const file of ['package.json','pnpm-lock.yaml','pnpm-workspace.yaml'])fs.copyFileSync(path.join(REPO,'runtime',file),path.join(repo,'runtime',file));
+ fs.cpSync(path.join(REPO,'runtime/patches'),path.join(repo,'runtime/patches'),{recursive:true});
+ fs.mkdirSync(path.join(dari,'packages/dsh/node_modules'),{recursive:true});fs.mkdirSync(path.join(dari,'node_modules'));
+ fs.cpSync(path.join(REPO,'vendors/dari/packages/dsh/dsh-preset-dari'),path.join(dari,'packages/dsh/dsh-preset-dari'),{recursive:true,filter:p=>path.basename(p)!=='node_modules'});
+ fs.mkdirSync(path.join(dari,'scripts'));
+ fs.writeFileSync(path.join(dari,'scripts/package-runtime.mjs'),String.raw`
+import fs from 'node:fs';import path from 'node:path';
+fs.appendFileSync(process.env.CALL_LOG,JSON.stringify({cmd:'package-runtime',args:process.argv.slice(2)})+'\n');
+fs.mkdirSync(process.argv[2],{recursive:true});fs.writeFileSync(path.join(process.argv[2],'service.mjs'),'// packaged runtime');
+`);
+ writeRelease(dari,'initial',fs,path);
+ fs.mkdirSync(path.join(dari,'dist/dari'));fs.writeFileSync(path.join(dari,'dist/dari/service.mjs'),'// initial runtime');
+ const tools=path.join(root,'tools');fs.mkdirSync(tools);
+ for(const name of ['pnpm','dsh','watchexec','npm'])writeTool(path.join(tools,name),CALL_STUB);
+ const log=path.join(root,'calls.jsonl'),env={...process.env,PATH:tools+':'+process.env.PATH,CALL_LOG:log,TEST_TOOLS:tools,JUST_TEMPDIR:root};
+ for(const key of ['DSH_CMD','DSH_HOME','DSH_PROFILE','DEPLOY_ROOT','DARI_REPO','FAIL_BUILD'])delete env[key];
+ const invoke=(args,extra={})=>spawnSync('just',['--justfile',path.join(repo,'justfile'),...args],{cwd:root,env:{...env,...extra},encoding:'utf8'});
+ return {root,repo,dari,tools,log,env,invoke,target:(port,base=path.join(repo,'.deploy'))=>path.join(base,port,'dsh'),cleanup:()=>fs.rmSync(root,{recursive:true,force:true})};
 }
+const success=result=>assert.equal(result.status,0,result.stdout+result.stderr);
+const manifest=target=>JSON.parse(fs.readFileSync(path.join(target,'profiles/web/package.json'),'utf8'));
+const published=target=>path.join(target,'packages/dsh-plugin-dari/lib/index.mjs');
 
-function writeTool(directory, name, content) {
-  const file = join(directory, name);
-  writeFileSync(file, content);
-  chmodSync(file, 0o755);
-}
-
-function findWatchexec() {
-  for (const directory of (process.env.PATH ?? '').split(':')) {
-    const candidate = join(directory, 'watchexec');
-    if (existsSync(candidate)) return candidate;
+test('install-profile refreshes releases, links current bundles and preserves user state',()=>{
+ const f=fixture();try{
+  const base=path.join(f.root,"user's deployments"),target=f.target('10924',base),env={DEPLOY_ROOT:base};
+  success(f.invoke(['install-profile','10924'],env));
+  const workspace=path.join(target,'demo-ws'),patch=path.join(target,'profiles/web/cordis.patch.yml');
+  fs.writeFileSync(path.join(workspace,'analysis.dari'),'# user analysis\n');
+  fs.writeFileSync(path.join(target,'.ctrl'),'checkpoint');
+  fs.appendFileSync(patch,'\n# user setting\n');
+  writeRelease(f.dari,'upgraded',fs,path);
+  success(f.invoke(['install-profile','10924'],env));
+  const m=manifest(target);
+  assert.deepEqual(m.dsh.profile.bundles,['@deepseek-ai/dsh-web-app','@local/dsh-plugin-dari-client','@local/dsh-preset-dari']);
+  for(const name of ['dsh-plugin-dari','dsh-plugin-dari-client','dsh-preset-dari']){
+   const dir=path.join(target,'packages',name);
+   assert.equal(m.dependencies['@local/'+name],'link:'+dir);
+   assert.equal(fs.realpathSync(path.join(target,'profiles/web/node_modules/@local',name)),dir);
   }
-  return null;
-}
-
-function realWatchexec() {
-  const found = findWatchexec();
-  if (found && basename(dirname(found)) === 'shims') {
-    const resolved = spawnSync('mise', ['which', 'watchexec'], { encoding: 'utf8' });
-    if (resolved.status === 0) return resolved.stdout.trim();
-  }
-  return found;
-}
-
-function readJsonLines(file) {
-  return readFileSync(file, 'utf8').split('\n').filter(Boolean).map((line) => JSON.parse(line));
-}
-
-test('install-profile installs twice, upgrades patches and starts the runtime', async () => {
-  const root = mkdtempSync(join(tmpdir(), 'oks-install-'));
-  try {
-    const repo = join(root, 'source repo');
-    copyRepo(repo);
-    // install-profile consumes dist/; build a minimal release fixture.
-    for (const [name, files] of Object.entries({
-      'dsh-oks': ['lib/index.mjs', 'cordis.patch.yml'],
-      'dsh-push-to-user': ['lib/client.js', 'cordis.patch.yml'],
-    })) {
-      const packageDirectory = join(repo, 'dist', name);
-      for (const relative of files) {
-        const target = join(packageDirectory, relative);
-        mkdirSync(dirname(target), { recursive: true });
-        writeFileSync(target, '// fixture\n');
-      }
-      writeFileSync(join(packageDirectory, 'package.json'), JSON.stringify({ name: `@local/${name}`, type: 'module' }));
-    }
-
-    const tools = join(root, 'bin');
-    mkdirSync(tools);
-    for (const name of ['pnpm', 'dsh', 'watchexec']) writeTool(tools, name, CALL_STUB);
-
-    const workspace = join(root, "user's workspace");
-    mkdirSync(workspace);
-    const target = join(root, "user's runtime");
-    const log = join(root, 'calls.jsonl');
-    const env = { ...process.env, PATH: `${tools}:${process.env.PATH}`, CALL_LOG: log, DSH_CMD: 'dsh', JUST_TEMPDIR: root };
-    const command = ['--justfile', join(repo, 'justfile'), `target=${target}`, `workspace=${workspace}`, 'port=10924'];
-    const run = (...args) => spawnSync('just', [...command, ...args], { cwd: root, env, encoding: 'utf8' });
-
-    for (let attempt = 0; attempt < 2; attempt += 1) {
-      const result = run('install-profile');
-      assert.equal(result.status, 0, result.stdout + result.stderr);
-    }
-    const manifest = JSON.parse(readFileSync(join(target, 'profiles/web/package.json'), 'utf8'));
-    const published = join(target, 'packages/dsh-oks');
-    assert.equal(manifest.dependencies['@local/dsh-oks'], `link:${published}`);
-    assert.deepEqual(manifest.dsh.profile.bundles, ['@deepseek-ai/dsh-web-app', '@local/dsh-push-to-user']);
-    assert.equal(manifest.dependencies['@local/dsh-push-to-user'], `link:${join(target, 'packages/dsh-push-to-user')}`);
-    assert.ok(existsSync(join(target, 'packages/dsh-push-to-user/lib/client.js')));
-    assert.ok(!('scripts' in JSON.parse(readFileSync(join(published, 'package.json'), 'utf8'))));
-    assert.ok(!existsSync(join(repo, 'packages/dsh-oks/lib')));
-
-    let patch = readFileSync(join(target, 'profiles/web/cordis.patch.yml'), 'utf8');
-    assert.equal(patch.split('id: preset-oks\n').length - 1, 1);
-    assert.ok(!patch.includes('id: preset-oks-knowledge\n'));
-    assert.equal(patch.split('id: preset-oks-vocabulary\n').length - 1, 1);
-    assert.ok(patch.includes('vocabularyHelper: true'));
-    assert.equal(patch.split('id: agent-preset-registry\n').length - 1, 1);
-    assert.ok(!patch.includes('\n[]\n'));
-    assert.ok(patch.includes('# user config'));
-    for (const name of ['dsh-fs-observation-policy', 'dsh-tool-fs', 'dsh-tool-fs-search']) {
-      assert.equal(patch.split(`name: "@deepseek-ai/${name}"`).length - 1, 1);
-      assert.ok(!patch.split('id: preset-oks-vocabulary\n')[1].includes(name));
-    }
-    assert.ok(patch.includes('sampleOverCapGlobResults: false'));
-
-    // Upgrade an existing search tool missing its required setting.
-    const patchFile = join(target, 'profiles/web/cordis.patch.yml');
-    writeFileSync(patchFile, patch.replace('              sampleOverCapGlobResults: false\n', ''));
-    let result = run('install-profile');
-    assert.equal(result.status, 0, result.stdout + result.stderr);
-    patch = readFileSync(patchFile, 'utf8');
-    assert.equal(patch.split('sampleOverCapGlobResults: false').length - 1, 1);
-
-    // Upgrade a previously installed profile with missing file tools.
-    patch = patch.replace('            config:\n              sampleOverCapGlobResults: false\n', '');
-    const dropped = ['id: tool-fs', 'id: fs-observation-policy', 'name: "@deepseek-ai/dsh-tool-fs', 'name: "@deepseek-ai/dsh-fs-observation-policy'];
-    writeFileSync(patchFile, patch.split('\n').filter((line) => !dropped.some((name) => line.includes(name))).join('\n'));
-    result = run('install-profile');
-    assert.equal(result.status, 0, result.stdout + result.stderr);
-    const restored = readFileSync(patchFile, 'utf8');
-    for (const name of ['dsh-fs-observation-policy', 'dsh-tool-fs', 'dsh-tool-fs-search']) {
-      assert.equal(restored.split(`name: "@deepseek-ai/${name}"`).length - 1, 1);
-    }
-
-    assert.ok(!existsSync(join(target, 'start.sh')));
-    assert.ok(existsSync(join(target, 'run-dsh.sh')));
-    assert.ok(existsSync(join(target, 'run.sh')));
-    assert.ok(existsSync(join(target, '.ctrl')));
-    assert.ok(existsSync(join(target, 'justfile')));
-    assert.ok(!existsSync(join(target, 'run-watch')));
-
-    const direct = spawnSync('just', ['--justfile', join(target, 'justfile'), 'run-dsh', '--host', '127.0.0.1'], { cwd: root, env, encoding: 'utf8' });
-    assert.equal(direct.status, 0, direct.stderr);
-    const directCall = readJsonLines(log).at(-1);
-    assert.deepEqual(directCall.args, ['web', '--port', '10924', '--host', '127.0.0.1']);
-
-    const watched = spawnSync('just', ['--justfile', join(target, 'justfile'), 'run', '--host', '127.0.0.1', 'two words'], { cwd: root, env, encoding: 'utf8' });
-    assert.equal(watched.status, 0, watched.stderr);
-    const call = readJsonLines(log).at(-1);
-    assert.deepEqual(call.args, ['web', '--port', '10924', '--host', '127.0.0.1', 'two words']);
-    assert.equal(call.cwd, workspace);
-    assert.equal(call.home, target);
-    assert.ok(existsSync(join(target, '.ctrl')));
-    const watcher = readJsonLines(log).at(-2);
-    assert.equal(watcher.cmd, 'watchexec');
-    assert.deepEqual(watcher.args, ['--restart', '--ignore-nothing', '--shell=none', '-w', join(target, '.ctrl'), '--',
-      join(target, 'run-dsh.sh'), '--host', '127.0.0.1', 'two words']);
-
-    // 真实 watcher 验证 touch 会重启；子进程为替身，不监听任何服务端口。
-    const real = realWatchexec();
-    assert.ok(real, 'watchexec is required for restart acceptance');
-    rmSync(join(tools, 'watchexec'));
-    symlinkSync(real, join(tools, 'watchexec'));
-    writeTool(tools, 'dsh', SLEEPER_STUB);
-    const restartLog = join(root, 'restart.jsonl');
-    const watcherLog = join(root, 'watcher.log');
-    const output = openSync(watcherLog, 'w');
-    const child = spawn(join(target, 'run.sh'), [], {
-      cwd: root,
-      env: { ...env, RESTART_LOG: restartLog },
-      detached: true,
-      stdio: ['ignore', output, output],
-    });
-    const waitRuns = async (count) => {
-      const deadline = Date.now() + 10_000;
-      while (Date.now() < deadline) {
-        assert.equal(child.exitCode, null, readFileSync(watcherLog, 'utf8'));
-        const entries = existsSync(restartLog) ? readJsonLines(restartLog) : [];
-        if (entries.length >= count) return entries;
-        await new Promise((done) => setTimeout(done, 50));
-      }
-      assert.fail(`watcher did not start/restart: ${readFileSync(watcherLog, 'utf8')}`);
-    };
-    try {
-      await waitRuns(1);
-      for (const count of [2, 3]) {
-        writeFileSync(join(target, '.ctrl'), '');
-        await waitRuns(count);
-      }
-      const runs = readJsonLines(restartLog);
-      assert.equal(new Set(runs.map((item) => item.pid)).size, 3);
-      assert.ok(runs.every((item) => item.cwd === workspace && item.home === target));
-      writeFileSync(join(workspace, 'unrelated.txt'), 'no restart');
-      await new Promise((done) => setTimeout(done, 400));
-      assert.equal(readJsonLines(restartLog).length, 3);
-    } finally {
-      try { process.kill(-child.pid, 'SIGTERM'); } catch {}
-      await new Promise((done) => setTimeout(done, 500));
-      try { process.kill(-child.pid, 'SIGKILL'); } catch {}
-    }
-
-    const before = readJsonLines(log).length;
-    rmSync(join(repo, 'dist'), { recursive: true, force: true });
-    result = run('install-profile');
-    assert.notEqual(result.status, 0);
-    assert.ok(result.stderr.includes('先运行 just build'));
-    assert.equal(readJsonLines(log).length - before, 0);
-
-    result = spawnSync('just', [...command, 'port=65536', 'install-profile'], { cwd: root, env, encoding: 'utf8' });
-    assert.notEqual(result.status, 0);
-    assert.ok(result.stderr.includes('1..65535'));
-  } finally {
-    rmSync(root, { recursive: true, force: true });
-  }
+  assert.equal(fs.readFileSync(published(target),'utf8'),'// upgraded\n');
+  assert.equal(fs.readFileSync(path.join(workspace,'analysis.dari'),'utf8'),'# user analysis\n');
+  assert.equal(fs.readFileSync(path.join(target,'.ctrl'),'utf8'),'checkpoint');
+  const yaml=fs.readFileSync(patch,'utf8');
+  assert(yaml.includes('# user config')&&yaml.includes('# user setting'));
+  assert(!yaml.split('\n').some(line=>line.trim()==='[]'));
+  assert.equal(yaml.split('id: llm-deepseek\n').length-1,1);assert(yaml.includes('MALFORMED_RESPONSE'));
+  assert(!yaml.includes('id: preset-dari\n'),'The preset patch belongs to its package, not the profile patch');
+  assert.deepEqual(fs.readFileSync(path.join(target,'packages/dsh-preset-dari/cordis.patch.yml')),fs.readFileSync(path.join(f.dari,'packages/dsh/dsh-preset-dari/cordis.patch.yml')));
+  assert.deepEqual(fs.readFileSync(path.join(target,'runtime/pnpm-lock.yaml')),fs.readFileSync(path.join(f.repo,'runtime/pnpm-lock.yaml')));
+  assert(readCalls(f.log).filter(c=>c.cmd==='pnpm').every(c=>c.args.join(' ')==='install --frozen-lockfile --reporter=append-only'));
+  assert(readCalls(f.log).every(c=>c.cmd!=='watchexec'&&c.args[0]!=='web'),'Installation must not launch a service');
+  assert(!fs.existsSync(path.join(workspace,'dari.json')));
+  for(const file of ['run.sh','run-dsh.sh','.ctrl','justfile','dari/service.mjs'])assert(fs.existsSync(path.join(target,file)),file);
+  const result=spawnSync('just',['--justfile',path.join(target,'justfile'),'run-dsh','--host','127.0.0.1'],{cwd:f.root,env:f.env,encoding:'utf8'});success(result);
+  const direct=readCalls(f.log).at(-1);assert.deepEqual(direct.args,['web','--port','10924','--host','127.0.0.1']);assert.equal(direct.cwd,workspace);assert.equal(direct.home,target);
+ }finally{f.cleanup();}
 });
 
-test('defaults follow the port', () => {
-  for (const port of ['10923', '10925']) {
-    const result = spawnSync('just', ['--set', 'port', port, '--evaluate', 'target'], { cwd: REPO, encoding: 'utf8' });
-    assert.equal(result.status, 0, result.stderr);
-    assert.equal(result.stdout.trim(), join(REPO, `.deploy/dsh-${port}`));
+test('explicit ports are required and invalid ports fail before external calls',()=>{
+ const f=fixture();try{
+  for(const recipe of ['install-profile','deploy']){
+   assert.notEqual(f.invoke([recipe]).status,0);
+   for(const port of ['0','65536','bad','010924']){
+    const result=f.invoke([recipe,port]);assert.notEqual(result.status,0);assert.match(result.stderr,/1\.\.65535/);
+   }
   }
+  assert(!fs.existsSync(f.log));assert(!fs.existsSync(path.join(f.repo,'.deploy')));
+ }finally{f.cleanup();}
 });
 
-test('deploy builds isolated ports and preserves workspaces and control files on updates', () => {
-  const root = mkdtempSync(join(tmpdir(), 'oks-deploy-'));
-  try {
-    const repo = join(root, "author's source repo");
-    copyRepo(repo);
-    const tools = join(root, 'bin');
-    mkdirSync(tools);
-    for (const name of ['pnpm', 'dsh', 'watchexec']) writeTool(tools, name, CALL_STUB);
-    const log = join(root, 'calls.jsonl');
-    const env = { ...process.env, PATH: `${tools}:${process.env.PATH}`, CALL_LOG: log, DSH_CMD: 'dsh', JUST_TEMPDIR: root };
-    const run = (port, extra = {}) => spawnSync('just', ['--justfile', join(repo, 'justfile'), 'deploy', port], {
-      cwd: root, env: { ...env, ...extra }, encoding: 'utf8',
-    });
-    for (const port of ['0', '65536', 'bad', '010924']) {
-      const result = run(port);
-      assert.notEqual(result.status, 0);
-      assert.match(result.stderr, /1\.\.65535/);
-    }
-    assert(!existsSync(log), 'Port validation precedes builds and installation');
-    assert(!existsSync(join(repo, '.deploy')));
-    for (const port of ['10924', '10925']) {
-      const result = run(port);
-      assert.equal(result.status, 0, result.stdout + result.stderr);
-      const target = join(repo, '.deploy', `dsh-${port}`);
-      for (const file of ['run.sh', 'run-dsh.sh', '.ctrl', 'justfile', 'demo-ws', 'profiles/web/package.json', 'packages/dsh-oks/lib/index.mjs', 'packages/dsh-push-to-user/lib/client.js']) {
-        assert(existsSync(join(target, file)), file);
-      }
-      const manifest = JSON.parse(readFileSync(join(target, 'profiles/web/package.json')));
-      assert.equal(manifest.dependencies['@local/dsh-oks'], `link:${join(target, 'packages/dsh-oks')}`);
-      assert(!existsSync(join(target, 'demo-ws/oks.json')), 'Deployment supports an unconfigured workspace');
-    }
-    assert(readJsonLines(log).filter(call => call.cmd === 'pnpm' && call.args.join(' ') === 'run build').length === 4);
-    assert(readJsonLines(log).every(call => call.cmd !== 'watchexec' && call.args[0] !== 'web'), 'Deployment does not start a service');
-    const target = join(repo, '.deploy/dsh-10924');
-    const workspace = join(target, 'demo-ws');
-    const config = '{"domain":"my-domain","model":"model.wasm","dataFile":"data.sqlite"}\n';
-    writeFileSync(join(workspace, 'oks.json'), config);
-    writeFileSync(join(workspace, 'analysis.dari'), '# user analysis\n');
-    writeFileSync(join(target, '.ctrl'), 'restart checkpoint');
-    const patchFile = join(target, 'profiles/web/cordis.patch.yml');
-    writeFileSync(patchFile, readFileSync(patchFile, 'utf8') + '\n# user setting\n');
-    let result = run('10924');
-    assert.equal(result.status, 0, result.stdout + result.stderr);
-    assert.equal(readFileSync(join(workspace, 'oks.json'), 'utf8'), config);
-    assert.equal(readFileSync(join(workspace, 'analysis.dari'), 'utf8'), '# user analysis\n');
-    assert.equal(readFileSync(join(target, '.ctrl'), 'utf8'), 'restart checkpoint');
-    assert(readFileSync(patchFile, 'utf8').includes('# user setting'));
-    assert(!existsSync(join(repo, '.deploy/dsh-10925/demo-ws/oks.json')));
+test('missing release rejects installation before replacing installed assets',()=>{
+ const f=fixture();try{
+  success(f.invoke(['install-profile','10924']));const target=f.target('10924'),before=fs.readFileSync(published(target)),count=readCalls(f.log).length;
+  fs.rmSync(path.join(f.dari,'dist/dsh-plugin-dari/package.json'));
+  const result=f.invoke(['install-profile','10924']);assert.notEqual(result.status,0);assert.match(result.stderr,/先运行 just build/);
+  assert.deepEqual(fs.readFileSync(published(target)),before);assert.equal(readCalls(f.log).length,count);
+ }finally{f.cleanup();}
+});
 
-    result = spawnSync(join(target, 'run.sh'), ['--host', '127.0.0.1', 'two words'], { cwd: root, env, encoding: 'utf8' });
-    assert.equal(result.status, 0, result.stderr);
-    const [watcher, server] = readJsonLines(log).slice(-2);
-    assert.equal(watcher.cmd, 'watchexec');
-    assert.deepEqual(watcher.args, ['--restart', '--ignore-nothing', '--shell=none', '-w', join(target, '.ctrl'), '--', join(target, 'run-dsh.sh'), '--host', '127.0.0.1', 'two words']);
-    assert.equal(server.cwd, workspace);
-    assert.equal(server.home, target);
-    assert.deepEqual(server.args, ['web', '--port', '10924', '--host', '127.0.0.1', 'two words']);
-
-    const published = readFileSync(join(target, 'packages/dsh-oks/lib/index.mjs'));
-    const before = readJsonLines(log).length;
-    result = run('10924', { FAIL_BUILD: '1' });
-    assert.notEqual(result.status, 0);
-    assert.match(result.stderr, /构建失败/);
-    assert(readJsonLines(log).slice(before).every(call => call.cmd === 'pnpm'));
-    assert.deepEqual(readFileSync(join(target, 'packages/dsh-oks/lib/index.mjs')), published);
-    assert.equal(readFileSync(join(workspace, 'oks.json'), 'utf8'), config);
-    assert.equal(readFileSync(join(target, '.ctrl'), 'utf8'), 'restart checkpoint');
-  } finally {
-    rmSync(root, { recursive: true, force: true });
+test('deploy isolates ports, preserves workspaces and leaves releases intact on build failure',()=>{
+ const f=fixture();try{
+  for(const port of ['10924','10925']){
+   success(f.invoke(['deploy',port]));const target=f.target(port);
+   for(const file of ['run.sh','run-dsh.sh','.ctrl','demo-ws','runtime/pnpm-lock.yaml','packages/dsh-plugin-dari/lib/index.mjs','packages/dsh-plugin-dari-client/lib/client.mjs'])assert(fs.existsSync(path.join(target,file)),file);
+   assert(!fs.existsSync(path.join(target,'demo-ws/dari.json')));
   }
+  assert.equal(readCalls(f.log).filter(c=>c.cmd==='pnpm'&&c.args.join(' ')==='run build').length,2);
+  assert(readCalls(f.log).every(c=>c.cmd!=='watchexec'&&c.args[0]!=='web'));
+  const target=f.target('10924'),workspace=path.join(target,'demo-ws');
+  const config='{"version":1,"domain":"custom","model":"model.wasm","dataFile":"data.sqlite"}\n';
+  fs.writeFileSync(path.join(workspace,'dari.json'),config);fs.writeFileSync(path.join(workspace,'analysis.dari'),'# keep');fs.writeFileSync(path.join(target,'.ctrl'),'checkpoint');
+  success(f.invoke(['deploy','10924']));
+  assert.equal(fs.readFileSync(path.join(workspace,'dari.json'),'utf8'),config);assert.equal(fs.readFileSync(path.join(workspace,'analysis.dari'),'utf8'),'# keep');assert.equal(fs.readFileSync(path.join(target,'.ctrl'),'utf8'),'checkpoint');
+  const before=fs.readFileSync(published(target)),count=readCalls(f.log).length;
+  const failed=f.invoke(['deploy','10924'],{FAIL_BUILD:'1'});assert.notEqual(failed.status,0);assert.match(failed.stderr,/构建失败/);
+  assert(readCalls(f.log).slice(count).every(c=>c.cmd==='pnpm'));
+  assert.deepEqual(fs.readFileSync(published(target)),before);assert.equal(fs.readFileSync(path.join(workspace,'dari.json'),'utf8'),config);assert.equal(fs.readFileSync(path.join(target,'.ctrl'),'utf8'),'checkpoint');
+  success(f.invoke(['deploy','10925','/model with spaces.wasm','/data with spaces.sqlite']));
+  assert.deepEqual(JSON.parse(fs.readFileSync(path.join(f.target('10925'),'demo-ws/dari.json'))),{version:1,domain:'ic',model:'/model with spaces.wasm',dataFile:'/data with spaces.sqlite'});
+  const watched=spawnSync(path.join(target,'run.sh'),['--host','127.0.0.1','two words'],{cwd:f.root,env:f.env,encoding:'utf8'});success(watched);
+  const [watcher,server]=readCalls(f.log).slice(-2);
+  assert.equal(watcher.cmd,'watchexec');assert.deepEqual(watcher.args,['--restart','--ignore-nothing','--shell=none','-w',path.join(target,'.ctrl'),'--',path.join(target,'run-dsh.sh'),'--host','127.0.0.1','two words']);
+  assert.deepEqual(server.args,['web','--port','10924','--host','127.0.0.1','two words']);assert.equal(server.cwd,workspace);assert.equal(server.home,target);
+ }finally{f.cleanup();}
+});
+
+function realWatchexec(){
+ const probe=spawnSync('which',['watchexec'],{encoding:'utf8'});if(probe.status!==0)return;
+ let value=probe.stdout.trim();if(path.basename(path.dirname(value))==='shims'){
+  const resolved=spawnSync('mise',['which','watchexec'],{encoding:'utf8'});if(resolved.status!==0)return;value=resolved.stdout.trim();
+ }return value;
+}
+const realWatcher=realWatchexec();
+test('only touching .ctrl restarts the isolated fake runtime',{skip:!realWatcher},async()=>{
+ const f=fixture();try{
+  success(f.invoke(['install-profile','10924']));const target=f.target('10924'),workspace=path.join(target,'demo-ws');
+  fs.rmSync(path.join(f.tools,'watchexec'));fs.symlinkSync(realWatcher,path.join(f.tools,'watchexec'));
+  writeTool(path.join(target,'runtime/node_modules/.bin/dsh'),SLEEPER);
+  const restartLog=path.join(f.root,'restarts.jsonl'),watcherLog=path.join(f.root,'watcher.log'),fd=fs.openSync(watcherLog,'w');
+  const child=spawn(path.join(target,'run.sh'),[],{cwd:f.root,env:{...f.env,RESTART_LOG:restartLog},detached:true,stdio:['ignore',fd,fd]});fs.closeSync(fd);
+  const waitRuns=async count=>{
+   const until=Date.now()+10000;
+   while(Date.now()<until){assert.equal(child.exitCode,null,fs.readFileSync(watcherLog,'utf8'));if(readCalls(restartLog).length>=count)return;await new Promise(r=>setTimeout(r,50));}
+   assert.fail(fs.readFileSync(watcherLog,'utf8'));
+  };
+  try{
+   await waitRuns(1);for(const n of [2,3]){fs.writeFileSync(path.join(target,'.ctrl'),'');await waitRuns(n);}
+   const runs=readCalls(restartLog);assert.equal(new Set(runs.map(r=>r.pid)).size,3);assert(runs.every(r=>r.cwd===workspace&&r.home===target));
+   fs.writeFileSync(path.join(workspace,'unrelated.txt'),'no restart');await new Promise(r=>setTimeout(r,400));assert.equal(readCalls(restartLog).length,3);
+  }finally{
+   try{process.kill(-child.pid,'SIGTERM');}catch{}
+   await new Promise(r=>setTimeout(r,300));try{process.kill(-child.pid,'SIGKILL');}catch{}
+  }
+ }finally{f.cleanup();}
 });

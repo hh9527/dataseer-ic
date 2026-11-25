@@ -1,6 +1,9 @@
 # 发布与运行环境。命令与目录约定见 README.md。
 # 端口没有默认值：每条命令都要显式给出，例如 `just run 10924`。
 
+# 消费方负责部署根目录；考官命令由 exam 子模块统一定义。
+exam_deploy_root := absolute_path(env_var_or_default("DEPLOY_ROOT", justfile_directory() / ".deploy"))
+
 # 显示可用命令。
 default:
     @just --list
@@ -318,6 +321,10 @@ install-profile deploy_port:
 test-install:
     node --test tests/install-profile.test.mjs
 
+# 隔离核验测评转调、参数与路径，不启动考官或 DSH 服务。
+test-exam:
+    node --test tests/exam-delegation.test.mjs
+
 # ── 运行 ────────────────────────────────────────────────────────────────────────
 [positional-arguments]
 run deploy_port:
@@ -326,44 +333,36 @@ run deploy_port:
     D="$PWD/.deploy/$1/dsh"
     "$D/run.sh" 2>&1 | tee >(node "$PWD/scripts/capture-token.mjs" "$D/token")
 
-# 跟着 token 文件走：自动换 Cookie 并重启考官服务，退出时收掉子进程。
+# 跟着 token 文件运行考官服务，状态目录由伞仓显式传入。
 [positional-arguments]
-run-tester deploy_port:
-    @node scripts/run-tester.mjs {{deploy_port}}
+run-tester port *args:
+    just --justfile "$PWD/exam/justfile" --set deploy_root {{quote(exam_deploy_root)}} run-tester "$@"
 
-# ── 采样 ────────────────────────────────────────────────────────────────────────
-# 考官工具：服务维护状态，ask 发问、submit 澄清，越界立即报错。
+# IC 测评数据由 exam submodule 生成，结构来自选定模型版本的 JSON 契约。
+[positional-arguments]
+generate-data output *args:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    just --justfile "$PWD/exam/justfile" generate {{quote(absolute_path(output))}} "$PWD/vendors/lab-ontology/icloud_model/data/generation-contract.json" "$PWD/vendors/lab-ontology/icloud_model/data/source_catalog.json" "${@:2}"
 
-# 列出题目（题号 / 类型 / 难度 / 步数 / 标题，读各题 frontmatter）。
+# ── 测评转调 ──────────────────────────────────────────────────────────────────
+# 业务参数和行为由 exam/justfile 维护，本仓只固定部署上下文。
 [positional-arguments]
 list *args:
-    node scripts/exam.mjs list "$@"
+    just --justfile "$PWD/exam/justfile" list "$@"
 
 [positional-arguments]
-new-session deploy_port *args:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    export TESTER_STATE_DIR="$PWD/.deploy/$1/tester"
-    node scripts/exam.mjs new-session "${@:2}"
+new-session port *args:
+    just --justfile "$PWD/exam/justfile" --set deploy_root {{quote(exam_deploy_root)}} new-session "$@"
 
 [positional-arguments]
-ask deploy_port *args:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    export TESTER_STATE_DIR="$PWD/.deploy/$1/tester"
-    node scripts/exam.mjs ask "${@:2}"
+ask port *args:
+    just --justfile "$PWD/exam/justfile" --set deploy_root {{quote(exam_deploy_root)}} ask "$@"
 
 [positional-arguments]
-submit deploy_port *args:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    export TESTER_STATE_DIR="$PWD/.deploy/$1/tester"
-    node scripts/exam.mjs submit "${@:2}"
+submit port *args:
+    just --justfile "$PWD/exam/justfile" --set deploy_root {{quote(exam_deploy_root)}} submit "$@"
 
 [positional-arguments]
-wait deploy_port *args:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    export TESTER_STATE_DIR="$PWD/.deploy/$1/tester"
-    node scripts/exam.mjs wait "${@:2}"
-
+wait port *args:
+    just --justfile "$PWD/exam/justfile" --set deploy_root {{quote(exam_deploy_root)}} wait "$@"
