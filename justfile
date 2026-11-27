@@ -364,5 +364,9 @@ submit port *args:
     just --justfile "$PWD/exam/justfile" --set deploy_root {{quote(exam_deploy_root)}} submit "$@"
 
 [positional-arguments]
+approve port *args:
+    just --justfile "$PWD/exam/justfile" --set deploy_root {{quote(exam_deploy_root)}} approve "$@"
+
+[positional-arguments]
 wait port *args:
     just --justfile "$PWD/exam/justfile" --set deploy_root {{quote(exam_deploy_root)}} wait "$@"

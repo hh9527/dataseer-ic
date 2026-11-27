@@ -32,7 +32,7 @@ test('exam owns list and the argument boundaries survive forwarding',()=>{
  assert.deepEqual(out.args,['tools/exam.mjs','list','--json']);assert.equal(out.cwd,join(root,'exam'));
 });
 test('all stateful commands keep the product state directory',()=>{
- for(const [recipe,args]of [['ask',['--from','/path with spaces/task.md','--dry-run']],['new-session',['--clear']],['submit',['第一项；第二项']],['wait',['--timeout','180']]]){
+ for(const [recipe,args]of [['ask',['--from','/path with spaces/task.md','--dry-run']],['new-session',['--clear']],['submit',['第一项；第二项']],['approve',['reject']],['wait',['--timeout','180']]]){
   const out=run([recipe,'10924',...args]);
   assert.deepEqual(out.args,['tools/exam.mjs',recipe,...args]);
   assert.equal(out.state,join(root,'.deploy/10924/tester'));
