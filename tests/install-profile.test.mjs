@@ -148,7 +148,9 @@ test('deploy isolates ports, preserves workspaces and leaves releases intact on 
  const f=fixture();try{
   const model=path.join(f.repo,'vendors/lab-ontology/dist/ic-model.wasm');
   fs.mkdirSync(path.dirname(model),{recursive:true});
-  fs.writeFileSync(model,'model');
+  fs.writeFileSync(model,'old model');
+  fs.writeFileSync(path.join(f.repo,'vendors/lab-ontology/justfile'),"build:\n    printf 'fresh model' > dist/ic-model.wasm\n");
+  writeTool(path.join(f.tools,'cargo'),'#!/bin/sh\nexit 0\n');
   const source=path.join(f.root,'external.sqlite');
   const metadata={anchor_utc:'2026-11-25T02:44:00Z',sha256:hash('sha256','database')};
   fs.mkdirSync(path.join(f.repo,'exam'));
@@ -163,7 +165,10 @@ test('deploy isolates ports, preserves workspaces and leaves releases intact on 
    for(const file of ['run.sh','run-dsh.sh','.ctrl','demo-ws','runtime/pnpm-lock.yaml','packages/dsh-plugin-dari/lib/index.mjs','packages/dsh-plugin-dari-client/lib/client.mjs'])assert(fs.existsSync(path.join(target,file)),file);
    assert.equal(fs.readFileSync(path.join(target,'db.sqlite'),'utf8'),'database');
    assert.deepEqual(JSON.parse(fs.readFileSync(path.join(target,'db.sqlite.json'))),metadata);
-   assert.equal(JSON.parse(fs.readFileSync(path.join(target,'demo-ws/dari.json'))).dataFile,path.join(target,'db.sqlite'));
+   const deployed = JSON.parse(fs.readFileSync(path.join(target,'demo-ws/dari.json')));
+   assert.equal(deployed.dataFile,path.join(target,'db.sqlite'));
+   assert.equal(deployed.model,path.join(target,'ic-model.wasm'));
+   assert.equal(fs.readFileSync(deployed.model,'utf8'),'fresh model');
   }
   assert.equal(fs.readFileSync(path.join(f.repo,'exam/generation.log'),'utf8'),'generated\ngenerated\n');
   assert.equal(readCalls(f.log).filter(c=>c.cmd==='pnpm'&&c.args.join(' ')==='run build').length,2);
@@ -172,10 +177,13 @@ test('deploy isolates ports, preserves workspaces and leaves releases intact on 
   const config=fs.readFileSync(path.join(workspace,'dari.json'),'utf8');
   fs.writeFileSync(path.join(workspace,'analysis.dari'),'# keep');
   fs.writeFileSync(path.join(target,'.ctrl'),'checkpoint');
+  fs.writeFileSync(model,'stale build output');
+  fs.writeFileSync(path.join(target,'ic-model.wasm'),'stale deployed model');
   success(f.invoke(['deploy','10924']));
   assert.equal(fs.readFileSync(path.join(workspace,'dari.json'),'utf8'),config);
   assert.equal(fs.readFileSync(path.join(workspace,'analysis.dari'),'utf8'),'# keep');
   assert.equal(fs.readFileSync(path.join(target,'.ctrl'),'utf8'),'checkpoint');
+  assert.equal(fs.readFileSync(path.join(target,'ic-model.wasm'),'utf8'),'fresh model');
   const before=fs.readFileSync(published(target));
   const failed=f.invoke(['deploy','10924'],{FAIL_BUILD:'1'});
   assert.notEqual(failed.status,0);assert.match(failed.stderr,/构建失败/);

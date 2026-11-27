@@ -48,11 +48,15 @@ deploy deploy_port model="" data="":
     set -euo pipefail
     DEPLOY_PORT="$1"
     # 模型默认用伞内构建的产物：它由 vendors/telora 的稳定切片编译，ABI 与插件一致。
-    MODEL="${2:-$PWD/vendors/lab-ontology/dist/ic-model.wasm}"; DATAFILE="$3"; DOMAIN="${DARI_DOMAIN:-ic}"
+    MODEL="$2"; DATAFILE="$3"; DOMAIN="${DARI_DOMAIN:-ic}"
     [[ "$DEPLOY_PORT" =~ ^[1-9][0-9]{0,4}$ ]] && (( DEPLOY_PORT <= 65535 )) || { printf 'deploy: port 必须是 1..65535 的整数\n' >&2; exit 1; }
     # 部署产物属于使用方项目：默认放在调用者当前目录的 .deploy 下，可用 DEPLOY_ROOT 指定。
     DEPLOY_ROOT="${DEPLOY_ROOT:-$PWD/.deploy}"
     DEPLOY_DIR="$DEPLOY_ROOT/$DEPLOY_PORT/dsh"
+    if [[ -z "$MODEL" ]]; then
+      just build-model
+      MODEL="$PWD/vendors/lab-ontology/dist/ic-model.wasm"
+    fi
     [[ -f "$MODEL" ]] || { printf 'deploy: 找不到模型 %s，请先运行 just build-model\n' "$MODEL" >&2; exit 1; }
     if [[ -z "$DATAFILE" ]]; then
       DATAFILE="$DEPLOY_DIR/db.sqlite"
@@ -83,13 +87,15 @@ deploy deploy_port model="" data="":
       }
       const workspace = join(directory, 'demo-ws');
       mkdirSync(workspace, { recursive: true });
-      const config = { version: 1, domain, model: resolve(model), dataFile: resolve(directory, 'db.sqlite') };
+      const config = { version: 1, domain, model: resolve(directory, 'ic-model.wasm'), dataFile: resolve(directory, 'db.sqlite') };
       writeFileSync(join(staging, 'db.sqlite.json'), JSON.stringify(metadata, null, 2) + '\n');
+      copyFileSync(model, join(staging, 'ic-model.wasm'));
       writeFileSync(join(staging, 'dari.json'), JSON.stringify(config, null, 2) + '\n');
       if (needsCopy) {
         renameSync(copy, config.dataFile);
         renameSync(join(staging, 'db.sqlite.json'), config.dataFile + '.json');
       }
+      renameSync(join(staging, 'ic-model.wasm'), config.model);
       renameSync(join(staging, 'dari.json'), join(workspace, 'dari.json'));
     } finally {
       rmSync(staging, { recursive: true, force: true });

@@ -31,12 +31,11 @@ mise install
 已有工作副本可用 `git submodule update --init --recursive` 补齐子模块。工具版本见 [mise.toml](mise.toml)。
 
 ```sh
-mise exec -- just build-model
 mise exec -- just deploy 10924
 mise exec -- just run 10924
 ```
 
-`just deploy` 会构建插件并准备独立工作区。`just run` 会在前台启动 DSH Web，打开终端打印的访问地址即可体验问数。部署和运行命令需显式指定端口，示例使用 `10924`。如需重启正在运行的服务，执行 `touch .deploy/10924/dsh/.ctrl`。
+`just deploy` 会从当前子模块源码构建 IC 模型和 Dari 插件，并更新端口独立的模型、插件和运行时。工作区引用部署目录中的 `ic-model.wasm`。`just run` 会在前台启动 DSH Web，打开终端打印的访问地址即可体验问数。部署和运行命令需显式指定端口，示例使用 `10924`。如需重启正在运行的服务，执行 `touch .deploy/10924/dsh/.ctrl`。
 
 `just deploy 10924` 会在该端口缺少数据库时调用 `just generate-data 10924`。数据库和元数据分别保存在 `.deploy/10924/dsh/db.sqlite` 和 `.deploy/10924/dsh/db.sqlite.json`。后续部署校验 SHA-256 并复用该端口的数据。主动执行 `just generate-data 10924` 会刷新该端口的数据和 UTC 截至时刻。可通过 `just deploy 10924 <模型> <数据库>` 指定其他来源，数据库旁须有同名的 `.json` 元数据文件。
 
