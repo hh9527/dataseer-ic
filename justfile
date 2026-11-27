@@ -13,7 +13,7 @@ update-deps:
     pnpm install --ignore-scripts
 
 # 构建所有包到发布目录 dist/（不进入版本控制）。
-build:
+build-dsh-dari:
     #!/usr/bin/env bash
     set -euo pipefail
     command -v pnpm >/dev/null 2>&1 || { printf 'build: 需要 pnpm\n' >&2; exit 1; }
@@ -34,7 +34,7 @@ telora:
     cargo build --release --manifest-path vendors/telora/Cargo.toml
 
 # 构建 IC 模型；编译器固定用 submodule 的 release 二进制。
-model: telora
+build-model: telora
     #!/usr/bin/env bash
     set -euo pipefail
     TELORA_BIN="$PWD/vendors/telora/target/release/telora" \
@@ -53,13 +53,48 @@ deploy deploy_port model="" data="":
     # 部署产物属于使用方项目：默认放在调用者当前目录的 .deploy 下，可用 DEPLOY_ROOT 指定。
     DEPLOY_ROOT="${DEPLOY_ROOT:-$PWD/.deploy}"
     DEPLOY_DIR="$DEPLOY_ROOT/$DEPLOY_PORT/dsh"
-    just build
-    mkdir -p "$DEPLOY_DIR/demo-ws"
-    # 模型与数据源属于产品输入：给了就写成工作区声明，供插件解析。
-    if [ -n "$MODEL" ] && [ -n "$DATAFILE" ]; then
-      printf '{\n  "version": 1,\n  "domain": "%s",\n  "model": "%s",\n  "dataFile": "%s"\n}\n' \
-        "$DOMAIN" "$MODEL" "$DATAFILE" > "$DEPLOY_DIR/demo-ws/dari.json"
+    [[ -f "$MODEL" ]] || { printf 'deploy: 找不到模型 %s，请先运行 just build-model\n' "$MODEL" >&2; exit 1; }
+    if [[ -z "$DATAFILE" ]]; then
+      DATAFILE="$DEPLOY_DIR/db.sqlite"
+      if [[ ! -e "$DATAFILE" ]]; then
+        just generate-data "$DEPLOY_PORT"
+      fi
     fi
+    [[ -f "$DATAFILE" ]] || { printf 'deploy: 找不到数据库 %s，请为该端口生成数据\n' "$DATAFILE" >&2; exit 1; }
+    just build-dsh-dari
+    mkdir -p "$DEPLOY_DIR"
+    node --input-type=module - "$DEPLOY_DIR" "$MODEL" "$DATAFILE" "$DOMAIN" <<'JS'
+    import { copyFileSync, createReadStream, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+    import { createHash } from 'node:crypto';
+    import { join, resolve } from 'node:path';
+
+    const [directory, model, source, domain] = process.argv.slice(2);
+    const staging = mkdtempSync(join(directory, '.data-'));
+    try {
+      const copy = join(staging, 'db.sqlite');
+      const needsCopy = resolve(source) !== resolve(directory, 'db.sqlite');
+      if (needsCopy) copyFileSync(source, copy);
+      const digest = createHash('sha256');
+      for await (const chunk of createReadStream(needsCopy ? copy : source)) digest.update(chunk);
+      const sha256 = digest.digest('hex');
+      const metadata = JSON.parse(readFileSync(source + '.json', 'utf8'));
+      if (metadata.sha256 !== sha256 || !Number.isFinite(Date.parse(metadata.anchor_utc))) {
+        throw Error('数据库摘要或截至时刻不匹配：' + source);
+      }
+      const workspace = join(directory, 'demo-ws');
+      mkdirSync(workspace, { recursive: true });
+      const config = { version: 1, domain, model: resolve(model), dataFile: resolve(directory, 'db.sqlite') };
+      writeFileSync(join(staging, 'db.sqlite.json'), JSON.stringify(metadata, null, 2) + '\n');
+      writeFileSync(join(staging, 'dari.json'), JSON.stringify(config, null, 2) + '\n');
+      if (needsCopy) {
+        renameSync(copy, config.dataFile);
+        renameSync(join(staging, 'db.sqlite.json'), config.dataFile + '.json');
+      }
+      renameSync(join(staging, 'dari.json'), join(workspace, 'dari.json'));
+    } finally {
+      rmSync(staging, { recursive: true, force: true });
+    }
+    JS
     just install-profile "$DEPLOY_PORT"
 
 # 安装已构建的发布目录到完整 Web profile，包含主 Agent 文件工具。
@@ -113,11 +148,11 @@ install-profile deploy_port:
     fi
     say "用 ${DSH_ARR[*]} 调用 dsh"
 
-    # 发布目录由 just build 生成；安装只负责复制与接线。
+    # 发布目录由 just build-dsh-dari 生成；安装只负责复制与接线。
     DARI_REPO="${DARI_REPO:-$REPO_DIR/vendors/dari}"
     DIST_DIR="$DARI_REPO/dist"
-    [ -f "$DIST_DIR/dsh-plugin-dari/package.json" ] || fail "缺少发布目录 $DIST_DIR/dsh-plugin-dari，先运行 just build"
-    [ -f "$DIST_DIR/dsh-plugin-dari-client/package.json" ] || fail "缺少发布目录 $DIST_DIR/dsh-plugin-dari-client，先运行 just build"
+    [ -f "$DIST_DIR/dsh-plugin-dari/package.json" ] || fail "缺少发布目录 $DIST_DIR/dsh-plugin-dari，先运行 just build-dsh-dari"
+    [ -f "$DIST_DIR/dsh-plugin-dari-client/package.json" ] || fail "缺少发布目录 $DIST_DIR/dsh-plugin-dari-client，先运行 just build-dsh-dari"
     CLIENT_PACKAGE='@local/dsh-plugin-dari-client'
     PRESET_PACKAGE='@local/dsh-preset-dari'
     CLIENT_DIR="$DSH_HOME/packages/dsh-plugin-dari-client"
@@ -340,10 +375,28 @@ run-tester port *args:
 
 # IC 测评数据由 exam submodule 生成，结构来自选定模型版本的 JSON 契约。
 [positional-arguments]
-generate-data output *args:
+generate-data port *args:
     #!/usr/bin/env bash
     set -euo pipefail
-    just --justfile "$PWD/exam/justfile" generate {{quote(absolute_path(output))}} "$PWD/vendors/lab-ontology/icloud_model/data/generation-contract.json" "$PWD/vendors/lab-ontology/icloud_model/data/source_catalog.json" "${@:2}"
+    port="$1"
+    shift
+    [[ "$port" =~ ^[1-9][0-9]{0,4}$ ]] && (( port <= 65535 )) || { printf 'generate-data: port 必须是 1..65535 的整数\n' >&2; exit 1; }
+    DATA_DIR={{quote(exam_deploy_root)}}/"$port"/dsh
+    mkdir -p "$DATA_DIR"
+    staging=$(mktemp -d "$DATA_DIR/.generate-XXXXXXXX")
+    trap 'rm -rf -- "$staging"' EXIT
+    just --justfile "$PWD/exam/justfile" generate "$staging/generated" "$PWD/vendors/lab-ontology/icloud_model/data/generation-contract.json" "$PWD/vendors/lab-ontology/icloud_model/data/source_catalog.json" "$@"
+    node --input-type=module - "$staging/generated" <<'JS'
+    import { readFileSync, writeFileSync } from 'node:fs';
+    import { join } from 'node:path';
+    const directory = process.argv[2];
+    const manifest = JSON.parse(readFileSync(join(directory, 'manifest.json'), 'utf8'));
+    const metadata = { anchor_utc: manifest.window.endExclusive, sha256: manifest.database.sha256 };
+    writeFileSync(join(directory, 'db.sqlite.json'), JSON.stringify(metadata, null, 2) + '\n');
+    JS
+    mv -f -- "$staging/generated/icloud.sqlite" "$DATA_DIR/db.sqlite"
+    mv -f -- "$staging/generated/db.sqlite.json" "$DATA_DIR/db.sqlite.json"
+    printf '%s\n' "$DATA_DIR/db.sqlite" "$DATA_DIR/db.sqlite.json"
 
 # ── 测评转调 ──────────────────────────────────────────────────────────────────
 # 业务参数和行为由 exam/justfile 维护，本仓只固定部署上下文。

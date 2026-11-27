@@ -1,5 +1,6 @@
 // 安装与部署只调用替身；真实 watcher 的子进程也是不监听端口的替身。
 import assert from 'node:assert/strict';
+import {hash} from 'node:crypto';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import {homedir} from 'node:os';
@@ -145,24 +146,47 @@ test('missing release rejects installation before replacing installed assets',()
 
 test('deploy isolates ports, preserves workspaces and leaves releases intact on build failure',()=>{
  const f=fixture();try{
+  const model=path.join(f.repo,'vendors/lab-ontology/dist/ic-model.wasm');
+  fs.mkdirSync(path.dirname(model),{recursive:true});
+  fs.writeFileSync(model,'model');
+  const source=path.join(f.root,'external.sqlite');
+  const metadata={anchor_utc:'2026-11-25T02:44:00Z',sha256:hash('sha256','database')};
+  fs.mkdirSync(path.join(f.repo,'exam'));
+  fs.writeFileSync(path.join(f.repo,'exam/justfile'),`generate output *args:
+    mkdir -p "{{output}}"
+    printf database > "{{output}}/icloud.sqlite"
+    printf '%s' '${JSON.stringify({window:{endExclusive:metadata.anchor_utc},database:{sha256:metadata.sha256}})}' > "{{output}}/manifest.json"
+    printf 'generated\\n' >> generation.log
+`);
   for(const port of ['10924','10925']){
    success(f.invoke(['deploy',port]));const target=f.target(port);
    for(const file of ['run.sh','run-dsh.sh','.ctrl','demo-ws','runtime/pnpm-lock.yaml','packages/dsh-plugin-dari/lib/index.mjs','packages/dsh-plugin-dari-client/lib/client.mjs'])assert(fs.existsSync(path.join(target,file)),file);
-   assert(!fs.existsSync(path.join(target,'demo-ws/dari.json')));
+   assert.equal(fs.readFileSync(path.join(target,'db.sqlite'),'utf8'),'database');
+   assert.deepEqual(JSON.parse(fs.readFileSync(path.join(target,'db.sqlite.json'))),metadata);
+   assert.equal(JSON.parse(fs.readFileSync(path.join(target,'demo-ws/dari.json'))).dataFile,path.join(target,'db.sqlite'));
   }
+  assert.equal(fs.readFileSync(path.join(f.repo,'exam/generation.log'),'utf8'),'generated\ngenerated\n');
   assert.equal(readCalls(f.log).filter(c=>c.cmd==='pnpm'&&c.args.join(' ')==='run build').length,2);
   assert(readCalls(f.log).every(c=>c.cmd!=='watchexec'&&c.args[0]!=='web'));
   const target=f.target('10924'),workspace=path.join(target,'demo-ws');
-  const config='{"version":1,"domain":"custom","model":"model.wasm","dataFile":"data.sqlite"}\n';
-  fs.writeFileSync(path.join(workspace,'dari.json'),config);fs.writeFileSync(path.join(workspace,'analysis.dari'),'# keep');fs.writeFileSync(path.join(target,'.ctrl'),'checkpoint');
+  const config=fs.readFileSync(path.join(workspace,'dari.json'),'utf8');
+  fs.writeFileSync(path.join(workspace,'analysis.dari'),'# keep');
+  fs.writeFileSync(path.join(target,'.ctrl'),'checkpoint');
   success(f.invoke(['deploy','10924']));
-  assert.equal(fs.readFileSync(path.join(workspace,'dari.json'),'utf8'),config);assert.equal(fs.readFileSync(path.join(workspace,'analysis.dari'),'utf8'),'# keep');assert.equal(fs.readFileSync(path.join(target,'.ctrl'),'utf8'),'checkpoint');
-  const before=fs.readFileSync(published(target)),count=readCalls(f.log).length;
-  const failed=f.invoke(['deploy','10924'],{FAIL_BUILD:'1'});assert.notEqual(failed.status,0);assert.match(failed.stderr,/构建失败/);
-  assert(readCalls(f.log).slice(count).every(c=>c.cmd==='pnpm'));
-  assert.deepEqual(fs.readFileSync(published(target)),before);assert.equal(fs.readFileSync(path.join(workspace,'dari.json'),'utf8'),config);assert.equal(fs.readFileSync(path.join(target,'.ctrl'),'utf8'),'checkpoint');
-  success(f.invoke(['deploy','10925','/model with spaces.wasm','/data with spaces.sqlite']));
-  assert.deepEqual(JSON.parse(fs.readFileSync(path.join(f.target('10925'),'demo-ws/dari.json'))),{version:1,domain:'ic',model:'/model with spaces.wasm',dataFile:'/data with spaces.sqlite'});
+  assert.equal(fs.readFileSync(path.join(workspace,'dari.json'),'utf8'),config);
+  assert.equal(fs.readFileSync(path.join(workspace,'analysis.dari'),'utf8'),'# keep');
+  assert.equal(fs.readFileSync(path.join(target,'.ctrl'),'utf8'),'checkpoint');
+  const before=fs.readFileSync(published(target));
+  const failed=f.invoke(['deploy','10924'],{FAIL_BUILD:'1'});
+  assert.notEqual(failed.status,0);assert.match(failed.stderr,/构建失败/);
+  assert.deepEqual(fs.readFileSync(published(target)),before);
+  assert.equal(fs.readFileSync(path.join(f.repo,'exam/generation.log'),'utf8'),'generated\ngenerated\n');
+  fs.writeFileSync(source,'bad copy');
+  fs.writeFileSync(source+'.json',JSON.stringify(metadata));
+  const corrupt=f.invoke(['deploy','10924',model,source]);
+  assert.notEqual(corrupt.status,0);assert.match(corrupt.stderr,/摘要/);
+  assert.equal(fs.readFileSync(path.join(target,'db.sqlite'),'utf8'),'database');
+  assert.equal(fs.readFileSync(path.join(workspace,'dari.json'),'utf8'),config);
   const watched=spawnSync(path.join(target,'run.sh'),['--host','127.0.0.1','two words'],{cwd:f.root,env:f.env,encoding:'utf8'});success(watched);
   const [watcher,server]=readCalls(f.log).slice(-2);
   assert.equal(watcher.cmd,'watchexec');assert.deepEqual(watcher.args,['--restart','--ignore-nothing','--shell=none','-w',path.join(target,'.ctrl'),'--',path.join(target,'run-dsh.sh'),'--host','127.0.0.1','two words']);

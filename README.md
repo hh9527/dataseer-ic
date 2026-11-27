@@ -17,35 +17,32 @@
 
 `runtime/` 是安装输入：`install-profile` 将其中的依赖声明、锁文件和补丁复制到部署目录，使用 `--frozen-lockfile` 安装 DSH 运行时。
 
-## 依赖
-
-- Node.js 22+
-- pnpm（构建插件与安装运行时）
-- Rust / cargo（仅构建 telora 时需要）
-- watchexec（`just run` 的自动重启）
-- just（命令入口）
-
-首次克隆后拉取子模块：
-
-```sh
-git submodule update --init --recursive
-```
-
 ## 快速开始
 
-**端口没有默认值，每条命令都要显式给出**，例如 `just run 10924`。
+安装 Git 和 mise，然后克隆仓库并安装项目固定版本的工具链。
 
 ```sh
-just build                 # 构建插件发布目录 vendors/dari/dist
-just model                 # 用 vendors/telora 的编译器编 IC 模型
-just deploy 10924 <模型> <数据文件>   # 准备部署（不启动服务）
-just run 10924             # 前台启动 dsh web，并把一次性 token 写进 .deploy/10924/dsh/token
-just run-tester 10924      # 另开终端：跟着 token 起考官服务
+git clone --recurse-submodules https://github.com/hh9527/dataseer-ic.git
+cd dataseer-ic
+mise trust
+mise install
 ```
 
-`deploy` 的模型参数留空时用伞内构建的 `vendors/lab-ontology/dist/ic-model.wasm`；数据文件留空时不写 `demo-ws/dari.json`，工作区就是个空配置。部署产物在 `.deploy/<port>/dsh`，服务由生成的 `run.sh` 启动，`touch .deploy/<port>/dsh/.ctrl` 可重启。
+已有工作副本可用 `git submodule update --init --recursive` 补齐子模块。工具版本见 [mise.toml](mise.toml)。
+
+```sh
+mise exec -- just build-model
+mise exec -- just deploy 10924
+mise exec -- just run 10924
+```
+
+`just deploy` 会构建插件并准备独立工作区。`just run` 会在前台启动 DSH Web，打开终端打印的访问地址即可体验问数。部署和运行命令需显式指定端口，示例使用 `10924`。如需重启正在运行的服务，执行 `touch .deploy/10924/dsh/.ctrl`。
+
+`just deploy 10924` 会在该端口缺少数据库时调用 `just generate-data 10924`。数据库和元数据分别保存在 `.deploy/10924/dsh/db.sqlite` 和 `.deploy/10924/dsh/db.sqlite.json`。后续部署校验 SHA-256 并复用该端口的数据。主动执行 `just generate-data 10924` 会刷新该端口的数据和 UTC 截至时刻。可通过 `just deploy 10924 <模型> <数据库>` 指定其他来源，数据库旁须有同名的 `.json` 元数据文件。
 
 ## 考核
+
+另开终端，在仓库根目录运行 `mise exec -- just run-tester 10924` 启动考官服务。下列命令可在已激活 mise 的终端执行，也可加上 `mise exec --` 前缀。
 
 题库在独立的 `exam` 子模块中维护，本仓的考官命令统一转调 `exam/justfile`，并显式传入伞仓的部署根目录。题目一题一份，原有分析卷在 `exam/questions/T1/`，扩展卷在 `A1`–`C1` 子目录；考官的职责、流程、澄清规则与记录表见 `exam/考官须知.md`。
 
@@ -62,7 +59,7 @@ just wait 10924                            # 上一轮没结束，继续等
 配套数据由测评子模块生成，读取选定模型版本发布的 JSON 契约：
 
 ```sh
-just generate-data /path/to/output --anchor-utc 2026-11-25T02:44:00Z
+just generate-data 10924 --anchor-utc 2026-11-25T02:44:00Z
 ```
 
 生成器在发布前执行逐题数据覆盖检查；固定日期题需选择覆盖题面的窗口。题目、场景与工具的维护说明见 [测评仓库](exam/README.md)，抽取来源与边界见 [迁移记录](exam/MIGRATION.md)。数据库、轨迹和测评记录放在 `.deploy/` 或外部目录，不进入 submodule。
@@ -115,4 +112,4 @@ git submodule update --init --recursive
 
 升级时在子模块的工作分支完成改动与验收，经授权提交后，再在父仓更新对应 gitlink。`exam` 的题目、数据生成与模型契约需要联合核对。
 
-`just model` 会先用 `vendors/telora` 重新编编译器，再编模型，保证编译器与插件运行时 ABI 一致；不要用系统里其它版本的 telora 编产物。
+`just build-model` 会先用 `vendors/telora` 重新编编译器，再编模型，保证编译器与插件运行时 ABI 一致；不要用系统里其它版本的 telora 编产物。
