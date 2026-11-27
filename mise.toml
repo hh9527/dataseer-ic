@@ -1,0 +1,6 @@
+[tools]
+node = "26.13.1"
+pnpm = "12.23.0"
+rust = "1.100.0"
+just = "1.59.0"
+watchexec = "2.8.0"
